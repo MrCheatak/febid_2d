@@ -1,19 +1,3 @@
-__kernel void stencil(__global double *n,
-                      __global const int *index,
-                      __global double *n_out)
-{
-        int ind = get_global_id(0);
-        int i = index[ind];
-        n_out[i] = n[i+1] + n[i-1] - 2 * n[i];
-}
-
-__kernel void mult2(__global const double *a,
-                  __global double *b)
-{
-    int gid = get_global_id(0);
-    b[gid] = convert_int(gid);
-}
-
 __kernel void reaction_equation(__global double *n,
                const double s,
                const double F,
@@ -63,13 +47,30 @@ __kernel void matrix_mult1_float(const int N,
     int k;
     int i = get_global_id(0);
     int j = get_global_id(1);
-    double tmp = 0.0f;
+    float tmp = 0.0f;
     for (k = 0; k < N; k++)
     {
         tmp += a[i*N+k] * b[k*N+j];
     }
     c[i*N+j] = tmp;
 }
+
+__kernel void matrix_mult1_float_consts(const int N,
+                          __global const float *a,
+                          __global const float *b,
+                          __global float *c)
+{
+    int k;
+    int i = get_global_id(0);
+    int j = get_global_id(1);
+    float tmp = 0.0f;
+    for (k = 0; k < N; k++)
+    {
+        tmp += a[i*N+k] * b[k*N+j];
+    }
+    c[i*N+j] = tmp;
+}
+
 
 __kernel void matrix_mult2_float(const int N,
                           __global float *a,
@@ -97,7 +98,7 @@ __kernel void matrix_mult3_float(const int N,
 {
     int j, k;
     float tmp;
-    float awrk[2500];
+    float awrk[5000];
     int i = get_global_id(0);
     for (k = 0; k < N; k++)
     {
@@ -113,3 +114,76 @@ __kernel void matrix_mult3_float(const int N,
         c[i*N+j] = tmp;
     }
 }
+
+
+__kernel void matrix_mult4_float_const_tiles(int const N,
+                                             __global const float *A,
+                                             __global const float *B,
+                                             __global float *C)
+{
+    short TSIZE = 16;
+    short GRID_SIZE = 16;
+    __local float Asub[16][16];
+    __local float Bsub[16][16];
+
+    int tx = get_local_id(0);
+    int ty = get_local_id(1);
+    int bx = get_group_id(0);
+    int by = get_group_id(1);
+
+    int a_row = TSIZE * by + ty;
+    int a_col = TSIZE * tx;
+    int b_row = TSIZE * by;
+    int b_col = TSIZE * tx + tx;
+
+    float sum = 0.0;
+    for (int i = 0; i < GRID_SIZE; i += TSIZE) {
+        if (a_row < N && a_col + i < N) {
+            Asub[ty][tx + i] = A[a_row * N + a_col + i];
+        } else {
+            Asub[ty][tx + i] = 0.0;
+        }
+
+        if (b_row + i < N && b_col < N) {
+            Bsub[ty + i][tx] = B[(b_row + i) * N + b_col];
+        } else {
+            Bsub[ty + i][tx] = 0.0;
+        }
+
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        for (int p = 0; p < TSIZE; p++) {
+            sum += Asub[ty][p] * Bsub[p][tx];
+        }
+
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    int c_row = TSIZE * by + ty;
+    int c_col = TSIZE * bx + tx;
+    if (c_row < N && c_col < N) {
+        C[c_row * N + c_col] = sum;
+    }
+}
+
+
+ __kernel void matrix_mult6_float_const_vector(int const N,
+                                             __global const float *A,
+                                             __global const float *B,
+                                             __global float4 *C)
+    {
+        int tx = get_global_id(0);
+        int ty = get_global_id(1);
+
+        float4 sum = (float4)(0.0, 0.0, 0.0, 0.0);
+        for (int i = 0; i < N; i++) {
+            float4 a = A[ty * N + i];
+            float4 b = B[i * N + tx];
+            sum += a * b;
+        }
+
+        int idx = ty * N + tx;
+        if (ty < N && tx < N) {
+            C[idx] = sum;
+        }
+    }

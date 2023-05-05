@@ -5,6 +5,8 @@ import numpy as np
 def cl_boilerplate():
     with open('kernel.cl', 'r', encoding='utf-8') as f:
         kernel = ''.join(f.readlines())
+    with open('kernel_stencil.cl', 'r', encoding='utf-8') as f:
+        kernel_stencil = ''.join(f.readlines())
 
     platforms = cl.get_platforms()
     devices = platforms[0].get_devices()
@@ -14,9 +16,10 @@ def cl_boilerplate():
     print(f'Using  {devices[0].name}')
     queue = cl.CommandQueue(context)
 
-    program = cl.Program(context, kernel).build()
+    program1 = cl.Program(context, kernel).build()
+    program2 = cl.Program(context, kernel_stencil).build()
 
-    return context, program, queue
+    return context, (program1,program2), queue
 
 
 def test_stencil():
