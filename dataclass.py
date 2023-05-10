@@ -80,7 +80,7 @@ class ContinuumModel:
         Time step of the reaction-diffusion equation, s.
         :return:
         """
-        self._dt = np.min([self.dt_des, self.dt_diss, self.dt_diff]) * 0.6
+        self._dt = np.min([self.dt_des, self.dt_diss, self.dt_diff]) * 0.5
         return self._dt
 
     @dt.setter
