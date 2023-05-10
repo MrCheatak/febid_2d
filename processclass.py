@@ -9,6 +9,10 @@ from dataclass import ContinuumModel
 
 
 class Experiment2D(ContinuumModel):
+    """
+    Class representing a virtual experiment with precursor properties and beam settings.
+    It allows calculation of a 2D precursor coverage and growth rate profiles based on the set conditions.
+    """
     r = None
     f = None
     n = None
@@ -32,16 +36,42 @@ class Experiment2D(ContinuumModel):
                     sigma=self.sigma, D=self.D, dt=self.dt, step=self.step)
 
     def get_gauss(self, r):
+        """
+        Generate electron beam profile based on a Gaussian.
+        :param r: radially symmetric grid
+        :return:
+        """
         self.f = self.f0 * np.exp(-r ** 2 / (2 * self.st_dev ** 2))
         return self.f
 
     def get_grid(self, bonds=None):
+        """
+        Generate a radially symmetric grid to use to perform the calculation.
+        :param bonds: custom bonds, a single positive value
+        :return:
+        """
         if not bonds:
             bonds = self.get_bonds()
         self.r = np.arange(-bonds, bonds, self.step)
         return self.r
 
     def solve_steady_state(self, r=None, f=None, eps=1e-8, n_init=None):
+        """
+        Derive a steady state precursor coverage.
+
+        r, f and n_init must have the same length.
+        If these parameters are not provided, they are generated automatically.
+
+        If n_init is not provided, an analytical solution is used.
+
+        eps should be changed together with step class attribute, otherwise the solution may fall through.
+
+        :param r: radially symmetric grid
+        :param f: electron flux
+        :param eps: solution accuracy
+        :param n_init: initial precursor coverage
+        :return: steady state precursor coverage profile
+        """
         if r is None:
             r = self.get_grid()
         else:
@@ -184,6 +214,12 @@ class Experiment2D(ContinuumModel):
         return n_out
 
     def analytic(self, r, f=None):
+        """
+        Derive a steady state precursor coverage using an analytical solution (for D=0)
+        :param r: radially symmetric grid
+        :param f: electron flux
+        :return: steady state precursor coverage profile
+        """
         if f is None:
             f = self.get_gauss(r)
         t_eff = (self.s * self.F / self.n0 + 1 / self.tau + self.sigma * f) ** -1
@@ -208,16 +244,32 @@ class Experiment2D(ContinuumModel):
         return a, b
 
     def get_bonds(self):
+        """
+        Define boundaries for the grid based on beam settings.
+        :return: float
+        """
         r_lim = math.fabs((math.log(self.f0, 8) / 3.5) * (self.st_dev * 3))
         return r_lim
 
     @property
     def R(self):
+        """
+        Calculate normalized growth rate.
+
+        :return:
+        """
+        if self.n is None:
+            print('No precursor coverage available! Find a solution first.')
+            return
         self._R = self.n * self.sigma * self.f / self.s / self.F
         return self._R
 
     @property
     def backend(self):
+        """
+        A backaend for the numerical solution. Can be cpu or gpu.
+        :return:
+        """
         return self.__backend
 
     @backend.setter
