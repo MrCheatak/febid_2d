@@ -32,7 +32,7 @@ def progress_callback(future):
 
 
 def write_to_file(p_o, tau_r, r_max):
-    fname = 'tau_p_4.txt'
+    fname = 'tau_p_5.txt'
     if not os.path.exists(fname):
         with open(fname, mode='x') as f:
             f.write('tau_r\tp_o\tr_max\n')
@@ -52,8 +52,31 @@ def dispatch(*args):
     return exps
 
 
-if __name__ == '__main__':
+def map_r1():
+    """
+    Generates a map of normed peak positions on a tau/p_o grid.
+    Iterated variables: sqrt(D), f0
+
+    Resolutions:
+        tau_r - [1.389, 97.978, 389]
+        p_o - [0, 1.17621, 0.00789]
+    :return:
+    """
     # Setting up
+    pr = Experiment2D()
+    # Initializing model
+    pr.n0 = 2.7  # 1/nm^2
+    pr.F = 730.0  # 1/nm^2/s
+    pr.s = 1.0
+    pr.V = 0.05  # nm^3
+    pr.tau = 100e-6  # s
+    pr.D = 8e5  # nm^2/s
+    pr.sigma = 0.02  # nm^2
+    pr.f0 = 1.0e7
+    pr.fwhm = 50  # nm
+    pr.order = 1
+    pr.step = 0.5  # nm
+
     param_name1 = 'D'
     param_name2 = 'f0'
     vals1 = np.power(np.arange(0, 3000, 20), 2)
@@ -82,4 +105,61 @@ if __name__ == '__main__':
     dt = timeit.default_timer() - start
     print(f'Took {dt:.3f} s')
     pr.__setattr__(param_name1, temp)
+
+
+def map_r2():
+    """
+    Generates a map of normed peak positions on a tau/p_o grid.
+    Iterated variables: sqrt(D), f0
+
+    Resolutions:
+        tau_r - [1, 10000, 0.5]
+        p_o - [0, 100, 0.00755]
+    :return:
+    """
+    # Setting up
+    pr = Experiment2D()
+    # Initializing model
+    pr.n0 = 2.7  # 1/nm^2
+    pr.F = 730.0  # 1/nm^2/s
+    pr.s = 1.0
+    pr.V = 0.05  # nm^3
+    pr.tau = 2000e-6  # s
+    pr.D = 1 # nm^2/s
+    pr.sigma = 0.02  # nm^2
+    pr.f0 = 1e3
+    pr.fwhm = 20  # nm
+    pr.order = 1
+    pr.step = 0.5  # nm
+    param_name1 = 'D'
+    param_name2 = 'f0'
+    vals1 = np.power(np.arange(0, 14100+0.7, 0.7), 2)
+    vals2 = np.arange(1e3, 1.6e8+7.5e3, 7.5e3)
+    # vals2 = np.power(10, vals2).astype(int)
+    # exps_all = []
+    temp = pr.__getattribute__(param_name1)
+    start = timeit.default_timer()
+    with ProcessPoolExecutor(max_workers=16) as executor:
+        futures = []
+        for i, val in enumerate(vals1):
+            pr1 = copy.deepcopy(pr)
+            pr1.__setattr__(param_name1, val)
+            fut = executor.submit(dispatch, param_name2, vals2, pr1)
+            fut.add_done_callback(progress_callback)
+            futures.append(fut)
+        for f in as_completed(futures):
+            exps = f.result()
+            r_max = exps.get_peak_position()
+            r_max_normed = 2 * r_max / exps.get_attr('fwhm')
+            tau_r = exps.get_attr('tau_r')
+            p_o = exps.get_attr('p_o')
+            # with lock:
+            write_to_file(p_o, tau_r, r_max_normed)
+    dt = timeit.default_timer() - start
+    print(f'Took {dt:.3f} s')
+    pr.__setattr__(param_name1, temp)
+
+
+if __name__ == '__main__':
+    map_r2()
 
