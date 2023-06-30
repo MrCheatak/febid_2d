@@ -4,7 +4,7 @@ import numexpr_mod as ne
 import pyopencl as cl
 from tqdm import tqdm
 
-from pycl_test import cl_boilerplate
+from pycl_test import cl_boilerplate, reaction_diffusion_jit
 from dataclass import ContinuumModel
 
 
@@ -46,7 +46,7 @@ class Experiment2D(ContinuumModel):
 
     def get_grid(self, bonds=None):
         """
-        Generate a radially symmetric grid to use to perform the calculation.
+        Generate a radially symmetric grid to perform the calculation.
         :param bonds: custom bonds, a single positive value
         :return:
         """
@@ -88,7 +88,8 @@ class Experiment2D(ContinuumModel):
             func = self.__numeric
         elif self.__backend == 'gpu':
             func = self.__numeric_gpu
-        n = func(r, f, eps, n)
+        if self.D != 0:
+            n = func(r, f, eps, n)
         return n
 
     def __numeric(self, r, f=None, eps=1e-8, n_init=None):
@@ -111,6 +112,7 @@ class Experiment2D(ContinuumModel):
             n_D = self.__diffusion(n)
             ne.re_evaluate('r_e', out=n, local_dict=self._local_dict)
             if n.max() > self.n0 or n.min() < 0:
+                print(f'D: {self.D}, f0: {self.f0}')
                 raise ValueError('Solution unstable!')
             if i % skip == 0 and i != 0:  # skipping achieved accuracy evaluation
                 norm = (np.linalg.norm(n[1:] - n_check[1:]) / np.linalg.norm(n[1:]))
@@ -141,12 +143,15 @@ class Experiment2D(ContinuumModel):
 
         n_iters = int(1e9)
         N = n_init.shape[0]
-        local_size = (64,)
-        global_size = (N % local_size[0] + N // local_size[0],)
-        n = np.pad(np.copy(n_init), (0, N % local_size[0]), 'constant', constant_values=(0, 0))
+        local_size = (1024,)
+        # global_size = (N % local_size[0] + N // local_size[0],)
+        n = np.pad(np.copy(n_init), (0, local_size[0] - N % local_size[0]), 'constant', constant_values=(0, 0))
         n_check = np.copy(n)
         n_D = np.zeros_like(n)
-        f = np.pad(f, (0, N % local_size[0]), 'constant', constant_values=(0, 0))
+        f = np.pad(f, (0, local_size[0] - N % local_size[0]), 'constant', constant_values=(0, 0))
+        n_D_f = n_D.astype(np.float32)
+        n_f = n.astype(np.float32)
+        n_check_f = n_check.astype(np.float32)
 
         base_step = 100
         skip_step = base_step * 5
@@ -158,35 +163,39 @@ class Experiment2D(ContinuumModel):
         iters = []
 
         context, prog, queue = cl_boilerplate()
-        index = np.arange(1, n.shape[0] - 2, dtype=np.int32)
-        n_dev = cl.Buffer(context, cl.mem_flags.READ_WRITE, size=n.nbytes)
-        n_D_dev = cl.Buffer(context, cl.mem_flags.READ_WRITE, size=n.nbytes)
-        f_dev = cl.Buffer(context, cl.mem_flags.READ_ONLY, size=f.nbytes)
-        index_dev = cl.Buffer(context, cl.mem_flags.READ_ONLY, size=index.nbytes)
+        prog = cl.Program(context, reaction_diffusion_jit(self.s, self.F, self.n0, self.tau, self.sigma, self.D, self.step, self.dt, local_size[0])).build()
+        # index = np.arange(1, n.shape[0] - 2, dtype=np.int32)
+        n_dev = cl.Buffer(context, cl.mem_flags.READ_WRITE, size=n.astype(np.float32).nbytes)
+        n_D_dev = cl.Buffer(context, cl.mem_flags.READ_WRITE, size=n.astype(np.float32).nbytes)
+        f_dev = cl.Buffer(context, cl.mem_flags.READ_ONLY, size=f.astype(np.float32).nbytes)
+        # index_dev = cl.Buffer(context, cl.mem_flags.READ_ONLY, size=index.nbytes)
 
-        cl.enqueue_copy(queue, n_dev, n)
-        cl.enqueue_copy(queue, index_dev, index)
-        cl.enqueue_copy(queue, f_dev, f)
+        cl.enqueue_copy(queue, n_dev, n.astype(np.float32))
+        # cl.enqueue_copy(queue, index_dev, index)
+        cl.enqueue_copy(queue, f_dev, f.astype(np.float32))
 
         for i in tqdm(range(n_iters)):
             if i % skip == 0 and i != 0:  # skipping array copy
-                # event1.wait()
+                event1.wait()
                 event2.wait()
-                cl.enqueue_copy(queue, n_check, n_dev)
+                cl.enqueue_copy(queue, n_check_f, n_dev)
 
             # event1 = prog[1].stencil_3(queue, global_size, local_size, np.int32(n.shape[0]), n_dev, n_D_dev)
             # event1 = prog[1].stencil(queue, global_size, local_size, n_dev, index_dev, n_D_dev)
-            event2 = prog[1].reaction_equation(queue, n.shape, None, n_dev, s_, F_, n0_, tau_, sigma_, f_dev, D_,
-                                               n_D_dev, step_,
-                                               dt_)
-            cl.enqueue_copy(queue, n, n_dev)
+            # event2 = prog[1].reaction_equation(queue, n.shape, None, n_dev, s_, F_, n0_, tau_, sigma_, f_dev, D_,
+            #                                    n_D_dev, step_,  dt_)
+            # cl.enqueue_copy(queue, n, n_dev)
+            event1 = prog.stencil_operator(queue, n.shape, local_size, n_dev, n_D_dev, np.int32(N))
+            event2 = prog.reaction_equation(queue, n.shape, local_size, n_dev, f_dev, n_D_dev, np.int32(N))
 
             if n.max() > self.n0 or n.min() < 0:
                 raise ValueError('Solution unstable!')
 
             if i % skip == 0 and i != 0:  # skipping achieved accuracy evaluation
-                cl.enqueue_copy(queue, n, n_dev)
-                norm = (np.linalg.norm(n[1:] - n_check[1:]) / np.linalg.norm(n[1:]))
+                event1.wait()
+                event2.wait()
+                cl.enqueue_copy(queue, n_f, n_dev)
+                norm = (np.linalg.norm(n[1:] - n_check_f[1:]) / np.linalg.norm(n_f[1:]))
                 norm_array.append(norm)  # recording achieved accuracy for fitting
                 iters.append(i)
                 skip += skip_step
@@ -200,8 +209,8 @@ class Experiment2D(ContinuumModel):
                 prediction_step = skip  # next prediction will be after another norm is calculated
                 n_predictions += 1
 
-        cl.enqueue_copy(queue, n, n_dev)
-        self.n = n
+        cl.enqueue_copy(queue, n_f, n_dev)
+        self.n = n_f[:N]
         return n
 
     def __diffusion(self, n):
@@ -218,7 +227,7 @@ class Experiment2D(ContinuumModel):
         Derive a steady state precursor coverage using an analytical solution (for D=0)
         :param r: radially symmetric grid
         :param f: electron flux
-        :return: steady state precursor coverage profile
+        :return: precursor coverage profile
         """
         if f is None:
             f = self.get_gauss(r)
@@ -267,7 +276,7 @@ class Experiment2D(ContinuumModel):
     @property
     def backend(self):
         """
-        A backaend for the numerical solution. Can be cpu or gpu.
+        A backend for the numerical solution. Can be cpu or gpu.
         :return:
         """
         return self.__backend

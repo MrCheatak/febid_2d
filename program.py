@@ -77,10 +77,8 @@ def show(pr, title=None):
 
 def plot(exps, x_name, y_name, title=None, color=None, logx=False, logy=False):
     fig, ax = plt.subplots()
-    x_l = [pr.__getattribute__(x_name) for pr in exps]
-    y_l = [pr.__getattribute__(y_name) for pr in exps]
-    x = np.array(x_l)
-    y = np.array(y_l)
+    x = exps.get_attr(x_name)
+    y = exps.get_attr(y_name)
     line = ax.scatter(x, y, c=color, cmap='magma')
     if logx:
         ax.semilogx()
@@ -93,9 +91,8 @@ def plot(exps, x_name, y_name, title=None, color=None, logx=False, logy=False):
 
 def plot_freex(exps, x, y_name, x_name=None, title=None, color=None, logx=False, logy=False):
     fig, ax = plt.subplots()
-    y_l = [pr.__getattribute__(y_name) for pr in exps]
+    y = exps.get_attr(y_name)
     x = np.array(x)
-    y = np.array(y_l)
     line = ax.scatter(x, y, c=color, cmap='magma')
     if logx:
         ax.semilogx()
@@ -108,8 +105,7 @@ def plot_freex(exps, x, y_name, x_name=None, title=None, color=None, logx=False,
 
 def plot_freey(exps, x_name, y, y_name=None, title=None, color=None, logx=False, logy=False):
     fig, ax = plt.subplots()
-    x_l = [pr.__getattribute__(x_name) for pr in exps]
-    x = np.array(x_l)
+    x = exps.get_attr(x_name)
     y = np.array(y)
     line = ax.scatter(x, y, c=color, cmap='magma')
     if logx:
@@ -118,19 +114,6 @@ def plot_freey(exps, x_name, y, y_name=None, title=None, color=None, logx=False,
         ax.semilogy()
     ax.set_xlabel(x_name)
     ax.set_ylabel(y_name)
-    plt.title(title)
-    plt.show()
-
-def plot_r_max(exps, r_max, y_name, title=None, color=None, logx=False):
-    fig, ax = plt.subplots()
-    x_l = [pr.__getattribute__(y_name) for pr in exps]
-    y = r_max
-    x = np.array(x_l)
-    line = ax.scatter(x, y, c=color, cmap='plasma')
-    if logx:
-        ax.semilogx()
-    ax.set_xlabel(y_name)
-    ax.set_ylabel(r'$r_{max}$')
     plt.title(title)
     plt.show()
 

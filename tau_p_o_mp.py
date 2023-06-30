@@ -1,15 +1,13 @@
 import copy
 import os
 import timeit
+import pickle
 
 import numpy as np
 import matplotlib.pyplot as plt
 from processclass import Experiment2D
-from program import loop_param, plot, plot_r_max
-from main import get_r_max, get_peak, get_peak_twinning, get_r_maxes
-
+from program import loop_param, plot
 from concurrent.futures import ProcessPoolExecutor, wait, ThreadPoolExecutor, as_completed
-from multiprocessing import Lock, Queue
 
 
 pr = Experiment2D()
@@ -31,30 +29,39 @@ def progress_callback(future):
     print('.', end='', flush=True)
 
 
-def write_to_file(p_o, tau_r, r_max):
-    fname = 'tau_p_5.txt'
+def write_to_file(fname, names, *args):
+    n = len(args)
     if not os.path.exists(fname):
         with open(fname, mode='x') as f:
-            f.write('tau_r\tp_o\tr_max\n')
-            for i in range(p_o.size):
-                f.write(f'{p_o[i]}\t{tau_r[i]}\t{r_max[i]}\n')
+            header = '\t'.join(names) + '\n'
+            f.write(header)
+            text = ''
+            for i in range(args[1].size):
+                for j in range(n):
+                    text += f'{args[j][i]}\t'
+                text += '\n'
+                f.write(text)
+                text = ''
     else:
         with open(fname, mode='a') as f:
-            for i in range(p_o.size):
-                f.write(f'{p_o[i]}\t{tau_r[i]}\t{r_max[i]}\n')
+            text = ''
+            for i in range(args[1].size):
+                for j in range(n):
+                    text += f'{args[j][i]}\t'
+                text += '\n'
+                f.write(text)
+                text = ''
     print('Wrote!')
 
 
 def dispatch(*args):
     exps = loop_param(*args)
-    # exps_all.append(exps)
-
     return exps
 
 
 def map_r1():
     """
-    Generates a map of normed peak positions on a tau/p_o grid.
+    Generates raw data for mapping on a tau/p_o grid.
     Iterated variables: sqrt(D), f0
 
     Resolutions:
@@ -63,6 +70,7 @@ def map_r1():
     :return:
     """
     # Setting up
+    fname = 'tau_p_3.txt'
     pr = Experiment2D()
     # Initializing model
     pr.n0 = 2.7  # 1/nm^2
@@ -81,35 +89,12 @@ def map_r1():
     param_name2 = 'f0'
     vals1 = np.power(np.arange(0, 3000, 20), 2)
     vals2 = np.arange(2e5, 5e7, 2e5)
-    # vals2 = np.power(10, vals2).astype(int)
-    data = np.zeros((vals1.shape[0] * vals2.shape[0], 3))
-    # exps_all = []
-    temp = pr.__getattribute__(param_name1)
-    start = timeit.default_timer()
-    with ProcessPoolExecutor(max_workers=16) as executor:
-        futures = []
-        for i, val in enumerate(vals1):
-            pr1 = copy.deepcopy(pr)
-            pr1.__setattr__(param_name1, val)
-            fut = executor.submit(dispatch, param_name2, vals2, pr1)
-            fut.add_done_callback(progress_callback)
-            futures.append(fut)
-        for f in as_completed(futures):
-            exps = f.result()
-            r_max = exps.get_peak_position()
-            r_max_normed = 2 * r_max / exps.get_attr('fwhm')
-            tau_r = exps.get_attr('tau_r')
-            p_o = exps.get_attr('p_o')
-            # with lock:
-            write_to_file(p_o, tau_r, r_max_normed)
-    dt = timeit.default_timer() - start
-    print(f'Took {dt:.3f} s')
-    pr.__setattr__(param_name1, temp)
+    map_2d(pr, (param_name1, param_name2), (vals1, vals2))
 
 
 def map_r2():
     """
-    Generates a map of normed peak positions on a tau/p_o grid.
+    Generates raw data for mapping on a tau/p_o grid.
     Iterated variables: sqrt(D), f0
 
     Resolutions:
@@ -118,6 +103,7 @@ def map_r2():
     :return:
     """
     # Setting up
+    fname = 'tau_p_6.1.txt'
     pr = Experiment2D()
     # Initializing model
     pr.n0 = 2.7  # 1/nm^2
@@ -133,33 +119,73 @@ def map_r2():
     pr.step = 0.5  # nm
     param_name1 = 'D'
     param_name2 = 'f0'
-    vals1 = np.power(np.arange(0, 14100+0.7, 0.7), 2)
+    vals1 = np.power(np.arange(2.1*97, 14100+2.1, 2.1), 2)
     vals2 = np.arange(1e3, 1.6e8+7.5e3, 7.5e3)
+    map_2d(pr, (param_name1, param_name2), (vals1, vals2))
+
+
+def map_r3():
+    """
+    Generates raw data for mapping on a tau/p_o grid.
+    Iterated variables: sqrt(D), f0
+
+    Resolutions:
+        tau_r - [1, 2000, 0.3]
+        p_o - [0, 50, 0.008]
+    :return:
+    """
+    # Setting up
+    fname = 'tau_p_8.txt'
+    pr = Experiment2D()
+    # Initializing model
+    pr.n0 = 2.7  # 1/nm^2
+    pr.F = 730.0  # 1/nm^2/s
+    pr.s = 1.0
+    pr.V = 0.05  # nm^3
+    pr.tau = 2000e-6  # s
+    pr.D = 1 # nm^2/s
+    pr.sigma = 0.02  # nm^2
+    pr.f0 = 1e3
+    pr.fwhm = 20  # nm
+    pr.order = 1
+    pr.step = 0.5  # nm
+    param_name1 = 'D'
+    param_name2 = 'f0'
+    vals1 = np.power(np.arange(0, 14100+2, 2), 2)
+    # vals1 = [0]
+    vals2 = np.arange(1e3, 8e7+3.5e4, 1e4)
     # vals2 = np.power(10, vals2).astype(int)
     # exps_all = []
-    temp = pr.__getattribute__(param_name1)
+    map_2d(pr, (param_name1, param_name2), (vals1, vals2))
+
+
+def map_2d(pr, names, vals, fname='exps', n_threads=10):
+    temp = pr.__getattribute__(names[0])
     start = timeit.default_timer()
-    with ProcessPoolExecutor(max_workers=16) as executor:
+    with ProcessPoolExecutor(max_workers=n_threads) as executor:
         futures = []
-        for i, val in enumerate(vals1):
+        for i in range(0, vals[0].size):
+            val = vals[0][i]
             pr1 = copy.deepcopy(pr)
-            pr1.__setattr__(param_name1, val)
-            fut = executor.submit(dispatch, param_name2, vals2, pr1)
+            pr1.__setattr__(names[0], val)
+            fut = executor.submit(dispatch, names[1], vals[1], pr1)
             fut.add_done_callback(progress_callback)
             futures.append(fut)
+        i = 0
         for f in as_completed(futures):
             exps = f.result()
-            r_max = exps.get_peak_position()
-            r_max_normed = 2 * r_max / exps.get_attr('fwhm')
-            tau_r = exps.get_attr('tau_r')
-            p_o = exps.get_attr('p_o')
-            # with lock:
-            write_to_file(p_o, tau_r, r_max_normed)
+            directory = 'sim_data'
+            fname = f'{fname}_{i}.obj'
+            file = os.path.join(directory, fname)
+            with open(file, mode='wb') as f:
+                pickle.dump(exps, f)
+                print(f'Wrote {i}')
+            i += 1
     dt = timeit.default_timer() - start
     print(f'Took {dt:.3f} s')
-    pr.__setattr__(param_name1, temp)
-
+    pr.__setattr__(names[0], temp)
 
 if __name__ == '__main__':
-    map_r2()
+    dir = 'sim_data'
+    map_r3()
 

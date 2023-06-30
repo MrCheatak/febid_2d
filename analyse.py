@@ -17,7 +17,7 @@ def convergence_analysis(y1, y2):
 
 def get_peak(x, y):
     """
-    Get all peaks of the deposit
+    Get all peaks of a curve
     :param x:
     :param y:
     :return: [x positions], [y positions]
@@ -31,7 +31,7 @@ def get_peak(x, y):
 
 def deposit_fwhm(x, y):
     """
-    Get FWHM of the deposit described by a curve
+    Get FWHM of a curve
     :param x:
     :param y:
     :return: float
