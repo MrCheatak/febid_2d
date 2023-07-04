@@ -23,7 +23,7 @@ def cl_boilerplate():
     return context, (program1,program2), queue
 
 
-def reaction_diffusion_jit(s, F, n0, tau, sigma, D, step, dt, local_size):
+def reaction_diffusion_jit(s, F, n0, tau, sigma, D, step, dt, global_size, local_size):
     text = """
 __constant float s = %f;
 __constant float F = %f;
@@ -34,6 +34,7 @@ __constant float D = %f;
 __constant float step_x = %f;
 __constant float dt = %f;
 
+__constant int global_size = %d
 __constant int local_size = %d;
 
 __kernel void reaction_equation(__global float* array, __global float* array1, __global float* array2, int size) 
@@ -83,8 +84,43 @@ __kernel void stencil_operator_local_mem(__global float* input, __global float* 
         }
 
 
+__kernel void stencil_rde(__global float* array, __global float* output, int loops, int size):
+    {
+        // Shared memory for caching array elements
+        __local float local_array[local_size];
+        float global_array[global_size];
+        __local int i = 0;
+        __local float stencil_value = 0.0f;
+        __local n = 0.0f
+        
+        int gid = get_global_id(0);
+        int lid = get_local_id(0);
+        int group_size = get_local_size(0);
+        int local_index = lid;
+        
+        // Load array elements to shared memory
+        local_array[lid] = input[gid];
+        barrier(CLK_LOCAL_MEM_FENCE);
+        
+        for (i = 0; i < loops; i++)
+        {
+            if (local_index > 0 && local_index < group_size - 1) 
+            {
+                stencil_value = local_array[local_index - 1] - 2.0f * local_array[local_index] + local_array[local_index + 1];
+            }
+            barrier(CLK_LOCAL_MEM_FENCE);
+            
+            if (gid > 0 && gid < size - 1) 
+            {
+                n = array[gid];
+                array[gid] = dt * (s * F * (1 - n / n0) - n / tau - n * sigma * array1[gid] + D * array2[gid] / step_x / step_x);
+            }
+        }
+        
+}
 
-    """ % (s, F, n0, tau, sigma, D, step, dt, local_size)
+
+    """ % (s, F, n0, tau, sigma, D, step, dt, global_size, local_size)
     return text
 
 

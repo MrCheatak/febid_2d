@@ -2,6 +2,8 @@ import numpy as np
 from math import sqrt, log
 from copy import deepcopy
 import matplotlib.pyplot as plt
+from multiprocessing import current_process
+from tqdm import tqdm
 
 from experimentsclass import ExperimentSeries2D
 from analyse import deposit_fwhm
@@ -48,31 +50,31 @@ n = 0.0
 f = 1e5
 n_D = 1e-5
 
-fig, ax = plt.subplots()
+# fig, ax = plt.subplots()
+#
+#
+# def plot_line(x, y, name=None, marker=None):
+#     global ax
+#     line, = ax.plot(x, y, label=name, marker=marker)
+#     plt.legend(fontsize=6, loc='upper right')
+#     # plt.pause(0.2)
+#     return line
 
 
-def plot_line(x, y, name=None, marker=None):
-    global ax
-    line, = ax.plot(x, y, label=name, marker=marker)
-    plt.legend(fontsize=6, loc='upper right')
-    # plt.pause(0.2)
-    return line
-
-
-def show(pr, title=None):
-    global ax
-    position = (0.02, 0.76)
-    text = f'n0={pr.n0}\n' \
-           f's={pr.s}\n' \
-           f'F={pr.F}\n' \
-           f'tau={pr.tau:.2e}\n' \
-           f'D={pr.D:.2e}\n' \
-           f'sigma={pr.sigma}\n' \
-           f'f0={pr.f0:.2e}\n' \
-           f'fwhm={pr.fwhm}'
-    plt.text(*position, text, transform=ax.transAxes, fontsize=6, snap=True)
-    plt.title(label=title, loc='center')
-    plt.show()
+# def show(pr, title=None):
+#     global ax
+#     position = (0.02, 0.76)
+#     text = f'n0={pr.n0}\n' \
+#            f's={pr.s}\n' \
+#            f'F={pr.F}\n' \
+#            f'tau={pr.tau:.2e}\n' \
+#            f'D={pr.D:.2e}\n' \
+#            f'sigma={pr.sigma}\n' \
+#            f'f0={pr.f0:.2e}\n' \
+#            f'fwhm={pr.fwhm}'
+#     plt.text(*position, text, transform=ax.transAxes, fontsize=6, snap=True)
+#     plt.title(label=title, loc='center')
+#     plt.show()
 
 
 def plot(exps, x_name, y_name, title=None, color=None, logx=False, logy=False):
@@ -118,9 +120,14 @@ def plot_freey(exps, x_name, y, y_name=None, title=None, color=None, logx=False,
     plt.show()
 
 
-def loop_param(name, vals, pr_init, backend='cpu'):
-    # global fig, ax
-    # fig, ax = plt.subplots()
+def loop_param(name, vals, pr_init, backend='cpu', mgr=None):
+    if mgr:
+        cp = current_process()
+        cp_id = cp._identity[0]-1
+        l = mgr[cp_id]
+        l[0] = 1
+        l[1] = vals.size
+        mgr[cp_id] = l
     pr = deepcopy(pr_init)
     pr.backend = backend
     r = pr.get_grid()
@@ -144,6 +151,11 @@ def loop_param(name, vals, pr_init, backend='cpu'):
                 f'φ={fwhm/pr.fwhm:.3f} ' \
                 f'φ1={pr.phi1:.3f} ' \
                 f'φ2={pr.phi2:.3f}\n'
+        if mgr:
+            l = mgr[cp_id]
+            l[0] += 1
+            mgr[cp_id] = l
         # plot_line(pr.r, pr.R, f'{name}={val:.1e}\n' + label)
     # show(pr, f'Growth rate profiles with variable {name}')
+    exps.param = name
     return exps

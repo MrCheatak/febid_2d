@@ -1,8 +1,10 @@
 import math
+from pickle import dump
 import numpy as np
 import numexpr_mod as ne
 import pyopencl as cl
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from pycl_test import cl_boilerplate, reaction_diffusion_jit
 from dataclass import ContinuumModel
@@ -290,3 +292,22 @@ class Experiment2D(ContinuumModel):
         else:
             print('Unidentified backend, use \'cpu\' or \'gpu\'. Defaulting to \'cpu\'')
             self.__backend = 'cpu'
+
+    def plot(self, var):
+        if var not in ['R', 'n', 'f']:
+            raise ValueError(f'{var} is not spatially resolved. Use R, n or f')
+        fig,ax = plt.subplots()
+        x = self.r
+        y = self.__getattribute__(var)
+        line, = ax.plot(x, y)
+        plt.show()
+
+    def save_to_file(self, filename):
+        """
+        Save experiment to a file.
+        :param filename: full file name (including path and extension)
+        :return:
+        """
+        with open(filename, mode='wb') as f:
+            dump(self, f)
+

@@ -1,4 +1,5 @@
 from copy import deepcopy
+from pickle import dump
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -139,6 +140,16 @@ class ExperimentSeries2D:
         ax.set_xlabel('r')
         plt.legend(fontsize=6, loc='upper right')
         plt.show()
+
+    def save_to_file(self, filename):
+        """
+        Save experiments to a file.
+        :param filename: full file name (including path and extension)
+        :return:
+        """
+        with open(filename, mode='wb') as f:
+            dump(self, f)
+
 
     def __getitem__(self, key):
         return self._experiments[key]

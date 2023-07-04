@@ -1,0 +1,7 @@
+numpy
+scipy
+numexpr_mod
+pyopencl
+tqdm
+matplotlib
+jupyter

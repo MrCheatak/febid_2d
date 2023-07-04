@@ -27,16 +27,21 @@ def trim(a, b):
 
 def find_crossing(a, b, a_ref, b_ref):
     """
-    a and b are 2D maps.
+    Find point on the map, where regions on maps a and b are taking specified values.
+    Maps must be resolved on the same x-y grid share a common region.
 
-    :param a:
-    :param b:
-    :param a_val:
-    :param b_val:
-    :return:
+    More than one point may be returned.
+
+    :param a: map of the first variable
+    :param b: map of the second variable
+    :param a_ref: value of a on the map
+    :param b_ref: value of b on the map
+    :return: tuple(x coords), tuple(y coords)
     """
 
-    inds = []
+    # Algorithm works step-wise by narrowing value window (increasing accuracy) on maps.
+    # A common region is found by finding intersections along axes.
+    x, y = (), ()
     eps = 0.1
     while True:
         ind1 = np.fabs(a[:, 2] - a_ref) <= eps * a_ref
@@ -56,7 +61,7 @@ def find_crossing(a, b, a_ref, b_ref):
         inds = intery[1]
         # x = x11[intery[1]]
         # y = intery[0]
-        if len(inds) > 1:
+        if len(inds) >= 1:
             x = x11[intery[1]]
             y = intery[0]
             eps /= 2
@@ -77,6 +82,6 @@ if __name__ == '__main__':
     r_max, R_ind = trim(r_max, R_ind)
 
     x, y = find_crossing(r_max, R_ind, r_max_ref, R_ind_ref)
-
+    print(x, y)
     a = 0
 
