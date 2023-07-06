@@ -123,7 +123,7 @@ def plot_freey(exps, x_name, y, y_name=None, title=None, color=None, logx=False,
 def loop_param(name, vals, pr_init, backend='cpu', mgr=None):
     if mgr:
         cp = current_process()
-        cp_id = cp._identity[0]-1
+        cp_id = cp._identity[0]-2
         l = mgr[cp_id]
         l[0] = 1
         l[1] = vals.size
@@ -133,7 +133,6 @@ def loop_param(name, vals, pr_init, backend='cpu', mgr=None):
     r = pr.get_grid()
     n_a = pr.analytic(r)
     exps = ExperimentSeries2D()
-    # plot_line(r, R_a, 'Analytic', marker='.')
     for i, val in enumerate(vals):
         # pr = deepcopy(pr)  # copying explicitly to preserve instances in the list
         pr.__setattr__(name, val)
@@ -142,20 +141,10 @@ def loop_param(name, vals, pr_init, backend='cpu', mgr=None):
             r = np.arange(-bonds, bonds, pr.step)
             n_a = pr.analytic(r)
         pr.solve_steady_state(r, n_init=n_a)
-        _ = pr.R
         exps.add_experiment(pr)
-        fwhm = deposit_fwhm(pr.r, pr.R)
-        label = f'p_i={pr.p_i:.3f} ' \
-                f'ρ_o={pr.p_o:.3f} ' \
-                f'τ={pr.tau_r:.3f}\n' \
-                f'φ={fwhm/pr.fwhm:.3f} ' \
-                f'φ1={pr.phi1:.3f} ' \
-                f'φ2={pr.phi2:.3f}\n'
         if mgr:
             l = mgr[cp_id]
             l[0] += 1
             mgr[cp_id] = l
-        # plot_line(pr.r, pr.R, f'{name}={val:.1e}\n' + label)
-    # show(pr, f'Growth rate profiles with variable {name}')
     exps.param = name
     return exps

@@ -159,45 +159,68 @@ def map_r3():
     param_name2 = 'f0'
     vals1 = np.power(np.arange(0, 14100+2, 2), 2)
     # vals1 = [0]
-    vals2 = np.arange(1e3, 8e7+3.5e4, 1e6)
+    vals2 = np.arange(1e3, 8e7+3.5e4, 1e4)
     # vals2 = np.power(10, vals2).astype(int)
     # exps_all = []
-    map_2d(pr, (param_name1, param_name2), (vals1, vals2))
+    start = 0
+    map_2d(pr, (param_name1, param_name2), (vals1, vals2), n_threads=16, init_i=start)
 
 
-def track_progress(progress):
-    pbs = [tqdm(total=progress[i][1], position=i, leave=False, ncols=80, desc=f'Process {i}') for i in range(len(progress))]
+def track_progress(args):
+    """
+    Track progress for each argument.
+    Creates stacked progress bars in console.
+
+    Should be launched as subprocess and terminated explicitly.
+    There should be no other output to console.
+
+    :param args: a tuple of current iteration and total N of iterations of a tracked task
+    :return:
+    """
+    pbs = [tqdm(total=args[i][1], position=i, leave=False, ncols=80, desc=f'Process {i}') for i in range(len(args))]
     pbs[0].desc = 'Main'
     while True:
         for i in range(len(pbs)):
-            if pbs[i].n < progress[i][0]:
-                pbs[i].n = progress[i][0]
-                pbs[i].refresh()
+            if pbs[i].n < args[i][0]:
+                pbs[i].n = args[i][0]
             if pbs[i].n >= pbs[i].total:
                 pbs[i].reset()
                 pbs[i].n = 0
-                pbs[i].refresh()
+            pbs[i].refresh()
             time.sleep(1e-2)
 
 
+def map_2d(pr, names, vals, fname='exps', n_threads=4, init_i=0):
+    """
+    Run scan across two base parameters and dump results to disk.
+    Uses multiple CPU cores.
 
-def map_2d(pr, names, vals, fname='exps', n_threads=7, start=0):
+    :param pr: Experiment instance with initial conditions
+    :param names: two parameter names
+    :param vals: two value collections
+    :param fname: base name for files
+    :param n_threads: number of CPU cores to use
+    :param init_i: skip values of the first parameter
+    :return:
+    """
     print(f'Running mapping task. Scanning across {names[0]} and {names[1]} parameters. \n'
           f'Value ranges: {names[0]}: {vals[0][0]}-{vals[0][-1]}, {names[1]}: {vals[1][0]}-{vals[1][-1]} \n'
           f'Grid size: {vals[0].size} * {vals[1].size} = {vals[0].size * vals[1].size} virtual experiments.')
-    if start:
-        print(f'Continuing from Experiments Set No.{start}: {names[0]}={vals[0][start]}\n')
-    temp = pr.__getattribute__(names[0])
+    if init_i:
+        print(f'Continuing from Experiments Set No.{init_i}: {names[0]}={vals[0][init_i]}\n')
     start = timeit.default_timer()
+    # Per process progress tracking setup
     mgr = Manager()
     progress = mgr.list()
     [progress.append([0, 0]) for i in range(n_threads+1)]
     l = progress[0]
     l[1] = vals[0].size
     progress[0] = l
+    progress_process = Process(target=track_progress, args=[progress])
+
     with ProcessPoolExecutor(max_workers=n_threads) as executor:
         futures = []
-        for i in range(0, vals[0].size):
+        for i in range(init_i, vals[0].size):
             val = vals[0][i]
             pr1 = copy.deepcopy(pr)
             pr1.__setattr__(names[0], val)
@@ -205,8 +228,6 @@ def map_2d(pr, names, vals, fname='exps', n_threads=7, start=0):
             # fut.add_done_callback(progress_callback)
             fut.__setattr__('id', i)
             futures.append(fut)
-        progress[0][1] = len(futures)
-        progress_process = Process(target=track_progress, args=[progress])
         progress_process.start()
         for fut in as_completed(futures):
             try:
@@ -214,10 +235,10 @@ def map_2d(pr, names, vals, fname='exps', n_threads=7, start=0):
             except Exception:
                 print(f'Encountered an error while processing Experiments Set {fut.id}: {fut.exception().args}, skipping')
             directory = 'sim_data'
-            fname = f'{fname}_{fut.id}.obj'
-            file = os.path.join(directory, fname)
-            with open(file, mode='wb') as f:
-                pickle.dump(exps, f)
+            filename = f'{fname}_{fut.id}.obj'
+            filepath = os.path.join(directory, filename)
+            # with open(filepath, mode='wb') as f:
+            #     pickle.dump(exps, f)
             #     print(f'Wrote {fut.id}')
             l = progress[0]
             l[0] += 1
@@ -225,7 +246,7 @@ def map_2d(pr, names, vals, fname='exps', n_threads=7, start=0):
         progress_process.terminate()
     dt = timeit.default_timer() - start
     print(f'Took {dt:.3f} s')
-    pr.__setattr__(names[0], temp)
+
 
 if __name__ == '__main__':
     dir = 'sim_data'
