@@ -133,86 +133,121 @@ class Experiment2D(ContinuumModel):
         self.n = n
         return n
 
-    def __numeric_gpu(self, r, f, eps=1e-8, n_init=None):
-        s_ = np.array([self.s])
-        F_ = np.array([self.F])
-        n0_ = np.array([self.n0])
-        tau_ = np.array([self.tau])
-        sigma_ = np.array([self.sigma])
-        D_ = np.array([self.D])
-        step_ = np.array([self.step])
-        dt_ = np.array([self.dt])
-
+    def __numeric_gpu(self, r_init, f_init, eps=1e-8, n_init=None):
         n_iters = int(1e9)
         N = n_init.shape[0]
-        local_size = (1024,)
+        local_size = (256,)
         # global_size = (N % local_size[0] + N // local_size[0],)
         n = np.pad(np.copy(n_init), (0, local_size[0] - N % local_size[0]), 'constant', constant_values=(0, 0))
         n_check = np.copy(n)
         n_D = np.zeros_like(n)
-        f = np.pad(f, (0, local_size[0] - N % local_size[0]), 'constant', constant_values=(0, 0))
-        n_D_f = n_D.astype(np.float32)
-        n_f = n.astype(np.float32)
-        n_check_f = n_check.astype(np.float32)
+        f = np.pad(f_init, (0, local_size[0] - N % local_size[0]), 'constant', constant_values=(0, 0))
+        r = np.pad(r_init, (0, local_size[0] - N % local_size[0]), 'constant', constant_values=(0, 0))
+        type_dev = np.float64
+        n_D_f = n_D.astype(type_dev)
+        n_f = n.astype(type_dev)
+        n_check_f = n_check.astype(type_dev)
 
-        base_step = 100
+        base_step = 50000
         skip_step = base_step * 5
         skip = skip_step  # next planned accuracy check iteration
+        step = 0
         prediction_step = skip_step * 3
         n_predictions = 0
         norm = 1  # achieved accuracy
         norm_array = []
         iters = []
-
+        # Getting equation constants
+        s = self.s
+        F = self.F
+        n0 = self.n0
+        tau = self.tau
+        sigma = self.sigma
+        D = self.D
+        step = self.step
+        dt = self.dt
+        # Increasing magnitude of the calculated value to increase floating point calculations
+        # Going from nm to 200 nm unit
+        unit = 100
+        n0, F, sigma, D, step = self.scale_parameters_units(unit)
+        f *= unit**2
+        eps *= unit/10
+        self.analytic(r, f, n0=n0, F=F, sigma=sigma, out=n)
         context, prog, queue = cl_boilerplate()
-        prog = cl.Program(context, reaction_diffusion_jit(self.s, self.F, self.n0, self.tau, self.sigma, self.D, self.step, self.dt, local_size[0])).build()
+        prog = cl.Program(context, reaction_diffusion_jit(s, F, n0, tau*1e4, sigma*1e4, D, step, dt*1e6, n.size, local_size[0])).build()
         # index = np.arange(1, n.shape[0] - 2, dtype=np.int32)
-        n_dev = cl.Buffer(context, cl.mem_flags.READ_WRITE, size=n.astype(np.float32).nbytes)
-        n_D_dev = cl.Buffer(context, cl.mem_flags.READ_WRITE, size=n.astype(np.float32).nbytes)
-        f_dev = cl.Buffer(context, cl.mem_flags.READ_ONLY, size=f.astype(np.float32).nbytes)
+        n_dev = cl.Buffer(context, cl.mem_flags.READ_WRITE, size=n.astype(type_dev).nbytes)
+        n_D_dev = cl.Buffer(context, cl.mem_flags.READ_WRITE, size=n.astype(type_dev).nbytes)
+        f_dev = cl.Buffer(context, cl.mem_flags.READ_ONLY, size=f.astype(type_dev).nbytes)
         # index_dev = cl.Buffer(context, cl.mem_flags.READ_ONLY, size=index.nbytes)
 
-        cl.enqueue_copy(queue, n_dev, n.astype(np.float32))
+        cl.enqueue_copy(queue, n_dev, n.astype(type_dev))
         # cl.enqueue_copy(queue, index_dev, index)
-        cl.enqueue_copy(queue, f_dev, f.astype(np.float32))
-
-        for i in tqdm(range(n_iters)):
-            if i % skip == 0 and i != 0:  # skipping array copy
+        cl.enqueue_copy(queue, f_dev, f.astype(type_dev))
+        # t = tqdm(total=n_iters)
+        i = 0
+        # for i in tqdm(range(n_iters)):
+        # for i in range(n_iters):
+        iter_jump = 100000
+        while i<n_iters:
+            for q in range((skip-i) // iter_jump):
+                step = iter_jump
+                event1 = prog.stencil_rde(queue, n.shape, local_size, n_dev, f_dev, np.int32(step), np.int32(N))
                 event1.wait()
-                event2.wait()
-                cl.enqueue_copy(queue, n_check_f, n_dev)
-
+                # t.update(step)
+            else:
+                step = (skip-i) % iter_jump
+                event1 = prog.stencil_rde(queue, n.shape, local_size, n_dev, f_dev, np.int32(step), np.int32(N))
+                event1.wait()
+                # t.update(step)
+            i = skip
+            if i % skip == 0 and i != 0:  # skipping array copy
+                # t.update(skip)
+                # event.wait()
+                event1.wait()
+                # event2.wait()
+                event3 = cl.enqueue_copy(queue, n_check_f, n_dev)
+                event3.wait()
+            event2 = prog.stencil_rde(queue, n.shape, local_size, n_dev, f_dev, np.int32(1), np.int32(N))
             # event1 = prog[1].stencil_3(queue, global_size, local_size, np.int32(n.shape[0]), n_dev, n_D_dev)
             # event1 = prog[1].stencil(queue, global_size, local_size, n_dev, index_dev, n_D_dev)
             # event2 = prog[1].reaction_equation(queue, n.shape, None, n_dev, s_, F_, n0_, tau_, sigma_, f_dev, D_,
             #                                    n_D_dev, step_,  dt_)
-            # cl.enqueue_copy(queue, n, n_dev)
-            event1 = prog.stencil_operator(queue, n.shape, local_size, n_dev, n_D_dev, np.int32(N))
-            event2 = prog.reaction_equation(queue, n.shape, local_size, n_dev, f_dev, n_D_dev, np.int32(N))
+            # event1 = prog.stencil_operator(queue, n.shape, local_size, n_dev, n_D_dev, np.int32(N))
+            # cl.enqueue_copy(queue, n_D_f, n_D_dev)
+            # event2 = prog.reaction_equation(queue, n.shape, local_size, n_dev, f_dev, n_D_dev, np.int32(N))
+            # cl.enqueue_copy(queue, n_f, n_dev)
 
-            if n.max() > self.n0 or n.min() < 0:
-                raise ValueError('Solution unstable!')
+            # if n.max() > self.n0 or n.min() < 0:
+            #     raise ValueError('Solution unstable!')
 
             if i % skip == 0 and i != 0:  # skipping achieved accuracy evaluation
+                # event.wait()
                 event1.wait()
-                event2.wait()
-                cl.enqueue_copy(queue, n_f, n_dev)
-                norm = (np.linalg.norm(n[1:] - n_check_f[1:]) / np.linalg.norm(n_f[1:]))
+                # event2.wait()
+                event4 = cl.enqueue_copy(queue, n_f, n_dev)
+                event4.wait()
+                norm = (np.linalg.norm(n_f[1:N] - n_check_f[1:N]) / np.linalg.norm(n_f[1:N]))
                 norm_array.append(norm)  # recording achieved accuracy for fitting
                 iters.append(i)
                 skip += skip_step
             if eps > norm:
-                print(f'Reached solution with an error of {norm:.3e}')
+                # print(f'Reached solution with an error of {norm/unit:.3e}')
                 break
             if i % prediction_step == 0 and i != 0:
+                # event.wait()
+                event1.wait()
+                # event2.wait()
                 a, b = self.__fit_exponential(iters, norm_array)
-                skip = int(
-                    (np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
+                skip = int((np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
+                if skip > n_iters:
+                    raise IndexError('Reached maximum number of iterations!')
                 prediction_step = skip  # next prediction will be after another norm is calculated
                 n_predictions += 1
-
+                # t.total = skip
+                # t.refresh()
         cl.enqueue_copy(queue, n_f, n_dev)
-        self.n = n_f[:N]
+        self.n = n_f[:N] / unit**2
         return n
 
     def __diffusion(self, n):
@@ -224,17 +259,31 @@ class Experiment2D(ContinuumModel):
         n_out[1:-1] += n[:-2]
         return n_out
 
-    def analytic(self, r, f=None):
+    def analytic(self, r, f=None, s=None, F=None, n0=None, tau=None, sigma=None, out=None):
         """
         Derive a steady state precursor coverage using an analytical solution (for D=0)
         :param r: radially symmetric grid
         :param f: electron flux
         :return: precursor coverage profile
         """
+        if s is None:
+            s = self.s
+        if F is None:
+            F = self.F
+        if n0 is None:
+            n0 = self.n0
+        if tau is None:
+            tau = self.tau
+        if sigma is None:
+            sigma = self.sigma
         if f is None:
             f = self.get_gauss(r)
-        t_eff = (self.s * self.F / self.n0 + 1 / self.tau + self.sigma * f) ** -1
-        self.n = n = self.s * self.F * t_eff
+        t_eff = (s * F / n0 + 1 / tau + sigma * f) ** -1
+        n = s * F * t_eff
+        if out is not None:
+            out[:] = n[:]
+        else:
+            self.n = n
         # print('Solved analytically')
         return n
 
@@ -259,7 +308,7 @@ class Experiment2D(ContinuumModel):
         Define boundaries for the grid based on beam settings.
         :return: float
         """
-        r_lim = math.fabs((math.log(self.f0, 8) / 3.5) * (self.st_dev * 3))
+        r_lim = math.fabs((math.log(self.f0, 8) / 3) * (self.st_dev * 3))
         return r_lim
 
     @property
@@ -274,6 +323,19 @@ class Experiment2D(ContinuumModel):
             return
         self._R = self.n * self.sigma * self.f / self.s / self.F
         return self._R
+
+    def scale_parameters_units(self, scale=100):
+        """
+        Calculate parameters in larger length units.
+        :param scale: scaling factor
+        :return: n0, F, sigma, D, step
+        """
+        n0 = self.n0 * scale**2
+        F = self.F * scale**2
+        D = self.D / scale**2
+        sigma = self.sigma /scale**2
+        step = self.step / scale
+        return n0, F, sigma, D, step
 
     @property
     def backend(self):

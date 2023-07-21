@@ -13,8 +13,9 @@ def cl_boilerplate():
     devices = platforms[0].get_devices()
 
     context = cl.Context(devices)
+
     # context = cl.create_some_context()
-    print(f'Using  {devices[0].name}')
+    # print(f'Using  {devices[0].name}')
     queue = cl.CommandQueue(context)
 
     program1 = cl.Program(context, kernel).build()
@@ -25,28 +26,30 @@ def cl_boilerplate():
 
 def reaction_diffusion_jit(s, F, n0, tau, sigma, D, step, dt, global_size, local_size):
     text = """
-__constant float s = %f;
-__constant float F = %f;
-__constant float n0 = %f;
-__constant float tau = %f;
-__constant float sigma = %f;
-__constant float D = %f;
-__constant float step_x = %f;
-__constant float dt = %f;
+#pragma OPENCL EXTENSION cl_khr_fp64 : enable
 
-__constant int global_size = %d
+__constant double s = %.12f;
+__constant double F = %.12f;
+__constant double n0 = %.12f;
+__constant double tau = %.12f;
+__constant double sigma = %.12f;
+__constant double D = %.12f;
+__constant double step_x = %.12f;
+__constant double dt = %.12f;
+
+__constant int global_size = %d;
 __constant int local_size = %d;
 
 __kernel void reaction_equation(__global float* array, __global float* array1, __global float* array2, int size) 
 {
-    __local float n;
+    float n;
 
     int gid = get_global_id(0);
 
-    if (gid > 0 && gid < size - 1) 
+    if (gid < size) 
     {
         n = array[gid];
-        array[gid] = dt * (s * F * (1 - n / n0) - n / tau - n * sigma * array1[gid] + D * array2[gid] / step_x / step_x);
+        array[gid] += dt * (s * F * (1 - n / n0) - n / tau - n * sigma * array1[gid] + D * array2[gid] / step_x / step_x) * 1e-6;
     }
 }
 
@@ -54,69 +57,114 @@ __kernel void stencil_operator(__global float* input, __global float* output, in
 {
     int gid = get_global_id(0);
 
-    if (gid > 0 && gid < size - 1) {
+    if (gid > 0 && gid < size - 1) 
+    {
         output[gid] = input[gid - 1] - 2.0f * input[gid] + input[gid + 1];
     }
 }
 
-__kernel void stencil_operator_local_mem(__global float* input, __global float* output, int size) {
-            // Shared memory for caching array elements
-            __local float local_array[local_size];
+__kernel void stencil_operator_local_mem(__global float* input, __global float* output, int size) 
+{
+    // Shared memory for caching array elements
+    __local float local_array[local_size];
 
-            int gid = get_global_id(0);
-            int lid = get_local_id(0);
-            int group_size = get_local_size(0);
-            int local_index = lid;
+    int gid = get_global_id(0);
+    int lid = get_local_id(0);
+    int group_size = get_local_size(0);
+    int local_index = lid;
 
-            // Load array elements to shared memory
-            local_array[lid] = input[gid];
-            barrier(CLK_LOCAL_MEM_FENCE);
+    // Load array elements to shared memory
+    local_array[lid] = input[gid];
+    barrier(CLK_LOCAL_MEM_FENCE);
 
-            // Apply stencil operator to the shared memory elements
-            float stencil_value = 0.0f;
-            if (local_index > 0 && local_index < group_size - 1) {
-                stencil_value = local_array[local_index - 1] - 2.0f * local_array[local_index] + local_array[local_index + 1];
-            }
-            barrier(CLK_LOCAL_MEM_FENCE);
+    // Apply stencil operator to the shared memory elements
+    __private float stencil_value = 0.0f;
+    if (local_index > 0 && local_index < group_size - 1) {
+        stencil_value = local_array[local_index - 1] - 2.0f * local_array[local_index] + local_array[local_index + 1];
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
 
-            // Write the stencil output to global memory
-            output[gid] = stencil_value;
+    // Write the stencil output to global memory
+    output[gid] = stencil_value;
         }
 
 
-__kernel void stencil_rde(__global float* array, __global float* output, int loops, int size):
+__kernel void stencil_rde(__global double* array, __global double* array1, int loops, int size)
+{
+    // Shared memory for caching array elements
+    __local double local_array[local_size+2];
+    // __local double laplace[local_size];
+    __local double f_local[local_size];
+    __local int i;
+    __local double Dsdt;
+    __local double sFdt;
+    __local double sFn0dt;
+    __local double taudt;
+    __private double stencil_value;
+    __private double coeff;
+    __local double n;
+    
+    int gid = get_global_id(0);
+    int lid = get_local_id(0);
+    int group_size = get_local_size(0);
+    int local_index = lid + 1;
+    
+    // Load array elements to shared memory with margin
+    if (lid == 0) 
     {
-        // Shared memory for caching array elements
-        __local float local_array[local_size];
-        float global_array[global_size];
-        __local int i = 0;
-        __local float stencil_value = 0.0f;
-        __local n = 0.0f
+        local_array[0] = array[gid > 0 ? gid - 1 : 0];
+    }
+    local_array[local_index] = array[gid];
+    if (lid == group_size - 1) 
+    {
+        local_array[local_index + 1] = array[gid < size - 1 ? gid + 1 : size - 1];
+    }
+    f_local[lid] = array1[gid] * sigma * 1e-4;
+    Dsdt = dt / step_x / step_x * D * 1e-6;
+    sFdt = s * F * dt * 1e-6;
+    sFn0dt = sFdt / n0;
+    taudt = dt/ tau / 1e-4 * 1e-6;
+    coeff = sFn0dt + taudt + f_local[lid] * dt * 1e-6;
+    
+    barrier(CLK_GLOBAL_MEM_FENCE);
+    
+    for (i = 0; i < loops; i++)
+    {   
+        // Update shared memory for the next iteration
+        //if (lid == 0) 
+        //{   
+        //    local_array[0] = array[gid > 0 ? gid - 1 : 0];
+        //}
+        //local_array[local_index] = array[gid];
+        //if (lid == group_size) 
+        //{
+        //    local_array[local_index + 1] = array[gid < size - 1 ? gid + 1 : size - 1];
+        //}
         
-        int gid = get_global_id(0);
-        int lid = get_local_id(0);
-        int group_size = get_local_size(0);
-        int local_index = lid;
+        //barrier(CLK_GLOBAL_MEM_FENCE);
         
-        // Load array elements to shared memory
-        local_array[lid] = input[gid];
-        barrier(CLK_LOCAL_MEM_FENCE);
-        
-        for (i = 0; i < loops; i++)
+        // Stencil operation
+        //if (gid >=0) 
+        //{
+            //stencil_value = local_array[local_index - 1] - 2 * local_array[local_index] + local_array[local_index + 1];
+        //}
+        if (gid > 0 && gid < size - 1)
         {
-            if (local_index > 0 && local_index < group_size - 1) 
-            {
-                stencil_value = local_array[local_index - 1] - 2.0f * local_array[local_index] + local_array[local_index + 1];
-            }
-            barrier(CLK_LOCAL_MEM_FENCE);
-            
-            if (gid > 0 && gid < size - 1) 
-            {
-                n = array[gid];
-                array[gid] = dt * (s * F * (1 - n / n0) - n / tau - n * sigma * array1[gid] + D * array2[gid] / step_x / step_x);
-            }
+            stencil_value = array[gid - 1] - 2 * array[gid] + array[gid + 1];
         }
         
+        barrier(CLK_GLOBAL_MEM_FENCE);
+        
+        // RDE calculation
+        // n = local_array[local_index];
+        n = array[gid];
+        // array[gid] += sFdt - n * sFn0dt - n * taudt - n * f_local[lid] * dt * 1e-6  + Dsdt * stencil_value;
+        array[gid] += sFdt - n * coeff + Dsdt * stencil_value;
+        // array[gid] += dt * (s * F * (1 - n / n0) - n / tau - n * sigma * array1[gid] + D * array2[gid] / step_x / step_x) * 1e-6;
+        // array[gid] += Dsdt * stencil_value;
+               
+        barrier(CLK_GLOBAL_MEM_FENCE);
+    }
 }
 
 

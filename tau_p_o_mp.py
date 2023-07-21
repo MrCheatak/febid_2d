@@ -7,6 +7,7 @@ import os
 import time
 import timeit
 import pickle
+import traceback
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -154,7 +155,7 @@ def map_r3():
     pr.f0 = 1e3
     pr.fwhm = 20  # nm
     pr.order = 1
-    pr.step = 0.5  # nm
+    pr.step = 0.1  # nm
     param_name1 = 'D'
     param_name2 = 'f0'
     vals1 = np.power(np.arange(0, 14100+2, 2), 2)
@@ -162,8 +163,44 @@ def map_r3():
     vals2 = np.arange(1e3, 8e7+3.5e4, 1e4)
     # vals2 = np.power(10, vals2).astype(int)
     # exps_all = []
-    start = 0
-    map_2d(pr, (param_name1, param_name2), (vals1, vals2), n_threads=16, init_i=start)
+    start = 7000
+    map_2d(pr, (param_name1, param_name2), (vals1, vals2), n_threads=2, init_i=start)
+
+
+def map_r4():
+    """
+    Generates raw data for mapping on a tau/p_o grid.
+    Iterated variables: sqrt(D), f0
+
+    Resolutions:
+        tau_r - [1, 520, 0.3]
+        p_o - [0, 10, 0.007]
+    :return:
+    """
+    # Setting up
+    fname = 'tau_p_8.txt'
+    pr = Experiment2D()
+    # Initializing model
+    pr.n0 = 2.7  # 1/nm^2
+    pr.F = 730.0  # 1/nm^2/s
+    pr.s = 1.0
+    pr.V = 0.05  # nm^3
+    pr.tau = 2000e-6  # s
+    pr.D = 1 # nm^2/s
+    pr.sigma = 0.02  # nm^2
+    pr.f0 = 1e3
+    pr.fwhm = 50  # nm
+    pr.order = 1
+    pr.step = 0.1  # nm
+    param_name1 = 'D'
+    param_name2 = 'f0'
+    vals1 = np.power(np.arange(0, 7000+5, 5), 2)
+    # vals1 = [0]
+    vals2 = np.arange(1e3, 2e7+1e4, 1e4)
+    # vals2 = np.power(10, vals2).astype(int)
+    # exps_all = []
+    start = 28
+    map_2d(pr, (param_name1, param_name2), (vals1, vals2), n_threads=6  , init_i=start)
 
 
 def track_progress(args):
@@ -177,10 +214,11 @@ def track_progress(args):
     :param args: a tuple of current iteration and total N of iterations of a tracked task
     :return:
     """
-    pbs = [tqdm(total=args[i][1], position=i, leave=False, ncols=80, desc=f'Process {i}') for i in range(len(args))]
+    pbs = [tqdm(total=args[i][1], initial=args[i][0], position=i, leave=False, ncols=80, desc=f'Process {i}') for i in range(len(args))]
+    pbs.append(tqdm(total=args[0][1]*args[1][1], initial=args[0][0]*args[1][1], ncols=160, position=len(pbs), desc='Total progress'))
     pbs[0].desc = 'Main'
     while True:
-        for i in range(len(pbs)):
+        for i in range(len(pbs)-1):
             if pbs[i].n < args[i][0]:
                 pbs[i].n = args[i][0]
             if pbs[i].n >= pbs[i].total:
@@ -188,6 +226,9 @@ def track_progress(args):
                 pbs[i].n = 0
             pbs[i].refresh()
             time.sleep(1e-2)
+        i += 1
+        pbs[i].n = pbs[0].n*pbs[1].total + np.asarray([pb.n for pb in pbs[1:i]]).sum()
+        pbs[i].refresh()
 
 
 def map_2d(pr, names, vals, fname='exps', n_threads=4, init_i=0):
@@ -208,6 +249,11 @@ def map_2d(pr, names, vals, fname='exps', n_threads=4, init_i=0):
           f'Grid size: {vals[0].size} * {vals[1].size} = {vals[0].size * vals[1].size} virtual experiments.')
     if init_i:
         print(f'Continuing from Experiments Set No.{init_i}: {names[0]}={vals[0][init_i]}\n')
+    ###Testing
+    backend = 'gpu'
+    ###
+
+
     start = timeit.default_timer()
     # Per process progress tracking setup
     mgr = Manager()
@@ -215,6 +261,7 @@ def map_2d(pr, names, vals, fname='exps', n_threads=4, init_i=0):
     [progress.append([0, 0]) for i in range(n_threads+1)]
     l = progress[0]
     l[1] = vals[0].size
+    l[0] = init_i
     progress[0] = l
     progress_process = Process(target=track_progress, args=[progress])
 
@@ -224,7 +271,11 @@ def map_2d(pr, names, vals, fname='exps', n_threads=4, init_i=0):
             val = vals[0][i]
             pr1 = copy.deepcopy(pr)
             pr1.__setattr__(names[0], val)
-            fut = executor.submit(dispatch, names[1], vals[1], pr1, 'cpu', progress)
+            # if i % n_threads//2 == 0:
+            #     backend = 'cpu'
+            # else:
+            #     backend = 'gpu'
+            fut = executor.submit(dispatch, names[1], vals[1], pr1, backend, progress)
             # fut.add_done_callback(progress_callback)
             fut.__setattr__('id', i)
             futures.append(fut)
@@ -233,10 +284,13 @@ def map_2d(pr, names, vals, fname='exps', n_threads=4, init_i=0):
             try:
                 exps = fut.result()
             except Exception:
-                print(f'Encountered an error while processing Experiments Set {fut.id}: {fut.exception().args}, skipping')
+                tb = traceback.format_exc()
+                print(f'Encountered an error while processing Experiments Set {fut.id}: {fut.exception().args}, {fut.exception().with_traceback(tb)}, skipping')
+                traceback.print_tb()
             directory = 'sim_data'
             filename = f'{fname}_{fut.id}.obj'
             filepath = os.path.join(directory, filename)
+            exps.save_to_file(filepath)
             # with open(filepath, mode='wb') as f:
             #     pickle.dump(exps, f)
             #     print(f'Wrote {fut.id}')
@@ -250,5 +304,5 @@ def map_2d(pr, names, vals, fname='exps', n_threads=4, init_i=0):
 
 if __name__ == '__main__':
     dir = 'sim_data'
-    map_r3()
+    map_r4()
 

@@ -24,6 +24,12 @@ def trim(a, b):
 
     return a, b
 
+def intersect2D(a, b):
+  """
+  Find row intersection between 2D numpy arrays, a and b.
+  Returns another numpy array with shared rows
+  """
+  return np.array([x for x in set(tuple(x) for x in a) & set(tuple(x) for x in b)])
 
 def find_crossing(a, b, a_ref, b_ref):
     """
@@ -46,36 +52,25 @@ def find_crossing(a, b, a_ref, b_ref):
     while True:
         ind1 = np.fabs(a[:, 2] - a_ref) <= eps * a_ref
         ind2 = np.fabs(b[:, 2] - b_ref) <= eps * b_ref
-        x1 = r_max[ind1, 0]
-        y1 = r_max[ind1, 1]
-        x2 = R_ind[ind2, 0]
-        y2 = R_ind[ind2, 1]
-        # Finding intersection along X
-        interx = np.intersect1d(x1, x2, return_indices=True)
-        x11 = x1[interx[1]]
-        # x22 = x2[interx[2]]
-        y11 = y1[interx[1]]
-        y22 = y2[interx[2]]
-        # Finding intersection along Y
-        intery = np.intersect1d(y11, y22, return_indices=True)
-        inds = intery[1]
-        # x = x11[intery[1]]
-        # y = intery[0]
-        if len(inds) >= 1:
-            x = x11[intery[1]]
-            y = intery[0]
+        a_temp = a[ind1, 0:2]
+        b_temp = b[ind2, 0:2]
+        inter = intersect2D(a_temp, b_temp)
+        if inter.shape[0] > 0:
+            x, y = inter[:, 0], inter[:, 1]
             eps /= 2
         else:
+            x = x.mean()
+            y = y.mean()
             break
     return x, y
 
 
 if __name__ == '__main__':
-    r_max_file = 'tau_p_7.txt'
-    R_ind_file = 'sim_data\\R_ind_tau_p_o.txt'
+    r_max_file = 'sim_data\\exps2\\r_max_tau_p_o.txt'
+    R_ind_file = 'sim_data\\exps2\\R_ind_tau_p_o.txt'
 
-    r_max_ref = 0.9
-    R_ind_ref = 0.2
+    r_max_ref = 0.89
+    R_ind_ref = 0.379
 
     r_max = np.genfromtxt(r_max_file, delimiter='\t', skip_header=1)
     R_ind = np.genfromtxt(R_ind_file, delimiter='\t', skip_header=1)

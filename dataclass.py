@@ -244,10 +244,6 @@ class ContinuumModel:
             self._phi2 = np.nan
         return self._phi2
 
-    @property
-    def get_R(self, n, f):
-        R = n * self.sigma * f * self.V
-
     def print_process_attributes(self):
         text = f'' \
                f'kd: {self.kd:.0f}\n' \

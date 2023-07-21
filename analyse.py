@@ -1,8 +1,20 @@
+"""
+Several methods for basic curve analysis
+"""
+
+
 from scipy.signal import argrelextrema as argextr
 import numpy as np
 
 
 def convergence_analysis(y1, y2):
+    """
+    Calculate residual sum of squares between two curves.
+    Curves must share the same x-coordinates.
+    :param y1: curve 1
+    :param y2: curve 2
+    :return: float
+    """
     # residual sum of squares
     ss_res = np.sum((y1 - y2) ** 2)
 
@@ -18,8 +30,8 @@ def convergence_analysis(y1, y2):
 def get_peak(x, y):
     """
     Get all peaks of a curve
-    :param x:
-    :param y:
+    :param x: x-coordinates
+    :param y: y-coordinates
     :return: [x positions], [y positions]
     """
     maxima = argextr(y, np.greater)
@@ -31,9 +43,9 @@ def get_peak(x, y):
 
 def deposit_fwhm(x, y):
     """
-    Get FWHM of a curve
-    :param x:
-    :param y:
+    Get FWHM of a curve. Curve must have bell curve-like behaviour.
+    :param x: x-coordinates
+    :param y: y-coordinates
     :return: float
     """
     hm_d1 = (y.max() - y.min()) / 2
