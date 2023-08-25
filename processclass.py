@@ -5,9 +5,13 @@ import numexpr_mod as ne
 import pyopencl as cl
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from scipy.interpolate import CubicSpline, PchipInterpolator, Akima1DInterpolator, make_interp_spline
 
 from pycl_test import cl_boilerplate, reaction_diffusion_jit
 from dataclass import ContinuumModel
+from analyse import get_peak
+from beam_profile import generate_profile
+from electron_flux import EFluxEstimator
 
 
 class Experiment2D(ContinuumModel):
@@ -19,6 +23,10 @@ class Experiment2D(ContinuumModel):
     f = None
     n = None
     _R = None
+    beam_type = 'gauss'
+    nn = 1
+    _interp = None
+    interpolation_method = 'cubic'
 
     def __init__(self, backend='cpu'):
         super().__init__()
@@ -37,13 +45,13 @@ class Experiment2D(ContinuumModel):
         return dict(s=self.s, F=self.F, n0=self.n0, tau=self.tau,
                     sigma=self.sigma, D=self.D, dt=self.dt, step=self.step)
 
-    def get_gauss(self, r):
+    def get_beam(self, r):
         """
         Generate electron beam profile based on a Gaussian.
         :param r: radially symmetric grid
         :return:
         """
-        self.f = self.f0 * np.exp(-r ** 2 / (2 * self.st_dev ** 2))
+        self.f = self.f0 * generate_profile(r, self.beam_type, self.st_dev, self.nn)
         return self.f
 
     def get_grid(self, bonds=None):
@@ -57,7 +65,7 @@ class Experiment2D(ContinuumModel):
         self.r = np.arange(-bonds, bonds, self.step)
         return self.r
 
-    def solve_steady_state(self, r=None, f=None, eps=1e-8, n_init=None):
+    def solve_steady_state(self, r=None, f=None, eps=1e-8, n_init=None, **kwargs):
         """
         Derive a steady state precursor coverage.
 
@@ -79,7 +87,7 @@ class Experiment2D(ContinuumModel):
         else:
             self.r = r
         if f is None:
-            f = self.get_gauss(r)
+            f = self.get_beam(r)
         else:
             self.f = f
         if n_init is None:
@@ -91,10 +99,11 @@ class Experiment2D(ContinuumModel):
         elif self.__backend == 'gpu':
             func = self.__numeric_gpu
         if self.D != 0:
-            n = func(r, f, eps, n)
+            n = func(r, f, eps, n, **kwargs)
+        self._interp = None
         return n
 
-    def __numeric(self, r, f=None, eps=1e-8, n_init=None):
+    def __numeric(self, r, f=None, eps=1e-8, n_init=None, progress=False):
         n_iters = int(1e9)
         n = np.copy(n_init)
         n_check = np.copy(n_init)
@@ -107,7 +116,10 @@ class Experiment2D(ContinuumModel):
         norm_array = []
         iters = []
         no_len = (i for i in range(1000000))
-        # for i in tqdm(range(10000000), total=float("inf")):
+        if progress:
+            t = tqdm(total=n_iters)
+        else:
+            t = None
         for i in range(100000000):
             if i % skip == 0 and i != 0:  # skipping array copy
                 n_check[...] = n
@@ -130,11 +142,16 @@ class Experiment2D(ContinuumModel):
                     (np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
                 prediction_step = skip  # next prediction will be after another norm is calculated
                 n_predictions += 1
+                if t:
+                    t.total = skip
+                    t.refresh()
+            if t:
+                t.update(1)
         self.n = n
         return n
 
-    def __numeric_gpu(self, r_init, f_init, eps=1e-8, n_init=None):
-        n_iters = int(1e9)
+    def __numeric_gpu(self, r_init, f_init, eps=1e-8, n_init=None, progress=False):
+        n_iters = int(1e10)
         N = n_init.shape[0]
         local_size = (256,)
         # global_size = (N % local_size[0] + N // local_size[0],)
@@ -148,7 +165,7 @@ class Experiment2D(ContinuumModel):
         n_f = n.astype(type_dev)
         n_check_f = n_check.astype(type_dev)
 
-        base_step = 50000
+        base_step = 100*int(np.log(self.D)*np.log(self.f0))
         skip_step = base_step * 5
         skip = skip_step  # next planned accuracy check iteration
         step = 0
@@ -184,7 +201,10 @@ class Experiment2D(ContinuumModel):
         cl.enqueue_copy(queue, n_dev, n.astype(type_dev))
         # cl.enqueue_copy(queue, index_dev, index)
         cl.enqueue_copy(queue, f_dev, f.astype(type_dev))
-        # t = tqdm(total=n_iters)
+        if progress:
+            t = tqdm(total=n_iters)
+        else:
+            t = None
         i = 0
         # for i in tqdm(range(n_iters)):
         # for i in range(n_iters):
@@ -194,12 +214,14 @@ class Experiment2D(ContinuumModel):
                 step = iter_jump
                 event1 = prog.stencil_rde(queue, n.shape, local_size, n_dev, f_dev, np.int32(step), np.int32(N))
                 event1.wait()
-                # t.update(step)
+                if t:
+                    t.update(step)
             else:
                 step = (skip-i) % iter_jump
                 event1 = prog.stencil_rde(queue, n.shape, local_size, n_dev, f_dev, np.int32(step), np.int32(N))
                 event1.wait()
-                # t.update(step)
+                if t:
+                    t.update(step)
             i = skip
             if i % skip == 0 and i != 0:  # skipping array copy
                 # t.update(skip)
@@ -242,10 +264,13 @@ class Experiment2D(ContinuumModel):
                 skip = int((np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
                 if skip > n_iters:
                     raise IndexError('Reached maximum number of iterations!')
+                if skip < 0:
+                    raise IndexError('Instability in solution, accuracy decrease trend.')
                 prediction_step = skip  # next prediction will be after another norm is calculated
                 n_predictions += 1
-                # t.total = skip
-                # t.refresh()
+                if t:
+                    t.total = skip
+                    t.refresh()
         cl.enqueue_copy(queue, n_f, n_dev)
         self.n = n_f[:N] / unit**2
         return n
@@ -277,7 +302,7 @@ class Experiment2D(ContinuumModel):
         if sigma is None:
             sigma = self.sigma
         if f is None:
-            f = self.get_gauss(r)
+            f = self.get_beam(r)
         t_eff = (s * F / n0 + 1 / tau + sigma * f) ** -1
         n = s * F * t_eff
         if out is not None:
@@ -324,6 +349,57 @@ class Experiment2D(ContinuumModel):
         self._R = self.n * self.sigma * self.f / self.s / self.F
         return self._R
 
+    @property
+    def r_max(self, interpolate=True):
+        """
+        Get positions of the growth speed maximum in all experiments.
+        Peaks are considered symmetric if they not at 0.
+        :return:
+        """
+        if interpolate:
+            if self._interp is None:
+                self.interpolate('R')
+        maxima, _ = get_peak(self.r, self.R, self._interp)
+        r_max = np.fabs(maxima.max())
+        return r_max
+
+    @property
+    def R_max(self, interpolate=True):
+        """
+        Get peak growth rate in all experiments.
+        :return:
+        """
+        if interpolate:
+            if self._interp is None:
+                self.interpolate('R')
+        _, maxima = get_peak(self.r, self.R, self._interp)
+        R_max = maxima.max()
+        return R_max
+
+    @property
+    def R_0(self):
+        """
+        Get growth rate at the center of the BIR in all experiments.
+        :return:
+        """
+        r, R = self.r, self.R
+        ind = (r==0).nonzero()[0]
+        if ind.size == 0:
+            ind = np.fabs(r).argmin()
+        R_0 = R[ind]
+        return R_0
+
+    @property
+    def R_ind(self):
+        """
+        Get relative indent of the growth rate profiles with two maximums.
+        :return:
+        """
+        R_center = self.R_0
+        R_max = self.R_max
+        R_ind = (R_max - R_center) / R_max
+        return R_ind
+
     def scale_parameters_units(self, scale=100):
         """
         Calculate parameters in larger length units.
@@ -358,11 +434,30 @@ class Experiment2D(ContinuumModel):
     def plot(self, var):
         if var not in ['R', 'n', 'f']:
             raise ValueError(f'{var} is not spatially resolved. Use R, n or f')
-        fig,ax = plt.subplots()
+        fig,ax = plt.subplots(dpi=150)
         x = self.r
         y = self.__getattribute__(var)
         line, = ax.plot(x, y)
         plt.show()
+
+    def interpolate(self, var):
+        if var not in ['R', 'n']:
+            raise ValueError(f'{var} is not interpolated. Use R or n')
+        x = self.r
+        y = self.__getattribute__(var)
+        method = self.interpolation_method
+        if method == 'cubic':
+            sp1 = CubicSpline(x, y)
+        elif method == 'pchip':
+            sp1 = PchipInterpolator(x, y)
+        elif method == 'akima':
+            sp1 = Akima1DInterpolator(x, y)
+        elif method == 'spline':
+            sp1 = make_interp_spline(x, y, k=3)
+        else:
+            raise ArithmeticError('Interpolation method not recognized. Use cubic, pchip, akima or spline')
+        self._interp = sp1
+        return sp1
 
     def save_to_file(self, filename):
         """
@@ -373,3 +468,10 @@ class Experiment2D(ContinuumModel):
         with open(filename, mode='wb') as f:
             dump(self, f)
 
+    def estimate_se_flux(self, ie, yld):
+        es = EFluxEstimator()
+        es.st_dev = self.st_dev
+        es.yld = yld
+        es.ie = ie
+        self.f0 = es.f0_se
+        return self.f0

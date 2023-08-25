@@ -96,7 +96,7 @@ def map_r1():
     param_name2 = 'f0'
     vals1 = np.power(np.arange(0, 3000, 20), 2)
     vals2 = np.arange(2e5, 5e7, 2e5)
-    map_2d(pr, (param_name1, param_name2), (vals1, vals2))
+    map_2d_mp(pr, (param_name1, param_name2), (vals1, vals2))
 
 
 def map_r2():
@@ -128,7 +128,7 @@ def map_r2():
     param_name2 = 'f0'
     vals1 = np.power(np.arange(2.1*97, 14100+2.1, 2.1), 2)
     vals2 = np.arange(1e3, 1.6e8+7.5e3, 7.5e3)
-    map_2d(pr, (param_name1, param_name2), (vals1, vals2))
+    map_2d_mp(pr, (param_name1, param_name2), (vals1, vals2))
 
 
 def map_r3():
@@ -164,7 +164,7 @@ def map_r3():
     # vals2 = np.power(10, vals2).astype(int)
     # exps_all = []
     start = 7000
-    map_2d(pr, (param_name1, param_name2), (vals1, vals2), n_threads=2, init_i=start)
+    map_2d_mp(pr, (param_name1, param_name2), (vals1, vals2), n_threads=2, init_i=start)
 
 
 def map_r4():
@@ -199,8 +199,8 @@ def map_r4():
     vals2 = np.arange(1e3, 2e7+1e4, 1e4)
     # vals2 = np.power(10, vals2).astype(int)
     # exps_all = []
-    start = 28
-    map_2d(pr, (param_name1, param_name2), (vals1, vals2), n_threads=6  , init_i=start)
+    start = 64
+    map_2d(pr, (param_name1, param_name2), (vals1, vals2), n_threads=2, init_i=start)
 
 
 def track_progress(args):
@@ -231,7 +231,7 @@ def track_progress(args):
         pbs[i].refresh()
 
 
-def map_2d(pr, names, vals, fname='exps', n_threads=4, init_i=0):
+def map_2d_mp(pr, names, vals, fname='exps', n_threads=4, init_i=0):
     """
     Run scan across two base parameters and dump results to disk.
     Uses multiple CPU cores.
@@ -298,6 +298,68 @@ def map_2d(pr, names, vals, fname='exps', n_threads=4, init_i=0):
             l[0] += 1
             progress[0] = l
         progress_process.terminate()
+    dt = timeit.default_timer() - start
+    print(f'Took {dt:.3f} s')
+
+
+def map_2d(pr, names, vals, fname='exps', n_threads=1, init_i=0):
+    """
+    Run scan across two base parameters and dump results to disk.
+    Uses multiple CPU cores.
+
+    :param pr: Experiment instance with initial conditions
+    :param names: two parameter names
+    :param vals: two value collections
+    :param fname: base name for files
+    :param n_threads: number of CPU cores to use
+    :param init_i: skip values of the first parameter
+    :return:
+    """
+    print(f'Running mapping task. Scanning across {names[0]} and {names[1]} parameters. \n'
+          f'Value ranges: {names[0]}: {vals[0][0]}-{vals[0][-1]}, {names[1]}: {vals[1][0]}-{vals[1][-1]} \n'
+          f'Grid size: {vals[0].size} * {vals[1].size} = {vals[0].size * vals[1].size} virtual experiments.')
+    if init_i:
+        print(f'Continuing from Experiments Set No.{init_i}: {names[0]}={vals[0][init_i]}\n')
+    ###Testing
+    backend = 'gpu'
+    ###
+
+    # Per process progress tracking setup
+    mgr = Manager()
+    progress = mgr.list()
+    [progress.append([0, 0]) for i in range(1+1)]
+    l = progress[0]
+    l[1] = vals[0].size
+    l[0] = init_i
+    progress[0] = l
+    progress_process = Process(target=track_progress, args=[progress])
+    progress_process.start()
+
+    start = timeit.default_timer()
+
+    for i in range(init_i, vals[0].size):
+        val = vals[0][i]
+        pr1 = copy.deepcopy(pr)
+        pr1.__setattr__(names[0], val)
+        # if i % n_threads//2 == 0:
+        #     backend = 'cpu'
+        # else:
+        #     backend = 'gpu'
+        try:
+            exps = dispatch(names[1], vals[1], pr1, backend, progress)
+        except Exception as e:
+            tb = traceback.format_exc()
+            print(f'Encountered an error while processing Experiments Set {i}: {e.args}, {e.with_traceback(tb)}, skipping')
+            traceback.print_tb()
+            continue
+        directory = 'sim_data'
+        filename = f'{fname}_{i}.obj'
+        filepath = os.path.join(directory, filename)
+        exps.save_to_file(filepath)
+        l = progress[0]
+        l[0] += 1
+        progress[0] = l
+    progress_process.terminate()
     dt = timeit.default_timer() - start
     print(f'Took {dt:.3f} s')
 

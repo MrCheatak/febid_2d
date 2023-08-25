@@ -4,6 +4,8 @@ Several methods for basic curve analysis
 
 
 from scipy.signal import argrelextrema as argextr
+from scipy.optimize import minimize_scalar
+from scipy.interpolate import CubicSpline
 import numpy as np
 
 
@@ -27,16 +29,23 @@ def convergence_analysis(y1, y2):
     return r2
 
 
-def get_peak(x, y):
+def get_peak(x, y, sp=None):
     """
     Get all peaks of a curve
     :param x: x-coordinates
     :param y: y-coordinates
     :return: [x positions], [y positions]
     """
-    maxima = argextr(y, np.greater)
-    y_max = y[maxima]
-    x_max = x[maxima]
+    if sp is None:
+        sp = CubicSpline(x, y)
+    def obj_func(f):
+        return -sp(f)
+    res = minimize_scalar(obj_func, bounds=(0, x.max()), method='bounded')
+    # maxima = argextr(y, np.greater)
+    # y_max = y[maxima]
+    # x_max = x[maxima]
+    x_max = res.x
+    y_max = -res.fun
 
     return x_max, y_max
 

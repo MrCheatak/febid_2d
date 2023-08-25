@@ -12,6 +12,7 @@ class ContinuumModel:
 
     The class calculates all the intermediate parameters describing deposition process features.
     """
+    name = ''
     s = 1.0
     F = 1.0  # 1/nm^2/s
     n0 = 1.0  # 1/nm^2
@@ -243,6 +244,18 @@ class ContinuumModel:
         except ZeroDivisionError:
             self._phi2 = np.nan
         return self._phi2
+
+    def print_initial_parameters(self):
+        text = (f''
+                f's: {self.s:.4f}\n'
+                f'F: {self.F:.0f}\n'
+                f'n0: {self.n0:.2f}\n'
+                f'tau: {self.tau:.6f}\n'
+                f'sigma: {self.sigma:.4f}\n'
+                f'f0: {self.f0:.0f}\n'
+                f'D: {self.D:.0f}\n'
+                f'fwhm: {self.fwhm:.1f}\n')
+        print(text)
 
     def print_process_attributes(self):
         text = f'' \

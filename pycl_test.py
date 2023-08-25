@@ -3,7 +3,9 @@ import numpy as np
 
 
 def cl_boilerplate():
-    with open('kernel.cl', 'r', encoding='utf-8') as f:
+    filename1 = 'C:\\Users\\sandr\\PycharmProjects\\febid_2d\\kernel.cl'
+    filename2 = 'C:\\Users\\sandr\\PycharmProjects\\febid_2d\\kernel_stencil.cl'
+    with open(filename1, 'r', encoding='utf-8') as f:
         kernel = ''.join(f.readlines())
     with open('kernel_stencil.cl', 'r', encoding='utf-8') as f:
         kernel_stencil = ''.join(f.readlines())
@@ -21,24 +23,24 @@ def cl_boilerplate():
     program1 = cl.Program(context, kernel).build()
     program2 = cl.Program(context, kernel_stencil).build()
 
-    return context, (program1,program2), queue
+    return context, (program1, program2), queue
 
 
 def reaction_diffusion_jit(s, F, n0, tau, sigma, D, step, dt, global_size, local_size):
     text = """
 #pragma OPENCL EXTENSION cl_khr_fp64 : enable
 
-__constant double s = %.12f;
-__constant double F = %.12f;
-__constant double n0 = %.12f;
-__constant double tau = %.12f;
-__constant double sigma = %.12f;
-__constant double D = %.12f;
-__constant double step_x = %.12f;
-__constant double dt = %.12f;
+__constant double s = %(s).12f;
+__constant double F = %(F).12f;
+__constant double n0 = %(n0).12f;
+__constant double tau = %(tau).12f;
+__constant double sigma = %(sigma).12f;
+__constant double D = %(D).12f;
+__constant double step_x = %(step_x).12f;
+__constant double dt = %(dt).12f;
 
-__constant int global_size = %d;
-__constant int local_size = %d;
+__constant int global_size = %(global_size)d;
+__constant int local_size = %(local_size)d;
 
 __kernel void reaction_equation(__global float* array, __global float* array1, __global float* array2, int size) 
 {
@@ -66,7 +68,7 @@ __kernel void stencil_operator(__global float* input, __global float* output, in
 __kernel void stencil_operator_local_mem(__global float* input, __global float* output, int size) 
 {
     // Shared memory for caching array elements
-    __local float local_array[local_size];
+    __local float local_array[%(local_size)d];
 
     int gid = get_global_id(0);
     int lid = get_local_id(0);
@@ -92,9 +94,9 @@ __kernel void stencil_operator_local_mem(__global float* input, __global float* 
 __kernel void stencil_rde(__global double* array, __global double* array1, int loops, int size)
 {
     // Shared memory for caching array elements
-    __local double local_array[local_size+2];
-    // __local double laplace[local_size];
-    __local double f_local[local_size];
+    __local double local_array[%(local_size)d+2];
+    // __local double laplace[%(local_size)d];
+    __local double f_local[%(local_size)d];
     __local int i;
     __local double Dsdt;
     __local double sFdt;
@@ -110,15 +112,15 @@ __kernel void stencil_rde(__global double* array, __global double* array1, int l
     int local_index = lid + 1;
     
     // Load array elements to shared memory with margin
-    if (lid == 0) 
-    {
-        local_array[0] = array[gid > 0 ? gid - 1 : 0];
-    }
-    local_array[local_index] = array[gid];
-    if (lid == group_size - 1) 
-    {
-        local_array[local_index + 1] = array[gid < size - 1 ? gid + 1 : size - 1];
-    }
+    //if (lid == 0) 
+    //{
+    //    local_array[0] = array[gid > 0 ? gid - 1 : 0];
+    //}
+    //local_array[local_index] = array[gid];
+    //if (lid == group_size - 1) 
+    //{
+    //    local_array[local_index + 1] = array[gid < size - 1 ? gid + 1 : size - 1];
+    //}
     f_local[lid] = array1[gid] * sigma * 1e-4;
     Dsdt = dt / step_x / step_x * D * 1e-6;
     sFdt = s * F * dt * 1e-6;
@@ -168,7 +170,8 @@ __kernel void stencil_rde(__global double* array, __global double* array1, int l
 }
 
 
-    """ % (s, F, n0, tau, sigma, D, step, dt, global_size, local_size)
+    """ % {'s': s, 'F': F, 'n0': n0, 'tau': tau, 'sigma': sigma, 'D': D, 'step_x': step, 'dt': dt,
+           'global_size': global_size, 'local_size': local_size}
     return text
 
 
@@ -217,4 +220,3 @@ if __name__ == '__main__':
     for i in range(100):
         prog.simple_math(queue, n.shape, None, n_dev, a, b, x_dev)
         cl.enqueue_copy(queue, n, n_dev)
-

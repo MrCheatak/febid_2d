@@ -37,7 +37,7 @@ class PseudoExperiment2D(Experiment2D):
         self.r = self.r_unnormed / self.p_o
         return self.r
 
-    def get_gauss(self, r):
+    def get_beam(self, r):
         self.f = np.exp(-r ** 2 / (2 * self.st_dev ** 2))
         self.f_unnormed = self.f * self.f0
         return self.f

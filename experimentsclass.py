@@ -96,7 +96,7 @@ class ExperimentSeries2D:
         for i, exp in enumerate(self._experiments):
             r, R = exp.r, exp.R
             maxima, _ = get_peak(r, R)
-            twin_peak[i] = (maxima.shape[0] > 1 and maxima.max() > exp.step)
+            twin_peak[i] = (maxima > 1 and maxima > exp.step)
         return twin_peak
 
     @property
@@ -122,7 +122,14 @@ class ExperimentSeries2D:
         R_ind = (R_max - R_center) / R_max
         return R_ind
 
-    def plot(self, label=True):
+    def plot(self, var='R', label=True):
+        if var=='R':
+            y_label = 'R/sJV'
+        elif var == 'n':
+            y_label = 'n'
+        else:
+            print(f'Variable {var} not found.')
+            return
         fig, ax = plt.subplots()
         label_text = None
         for pr in self._experiments:
@@ -135,8 +142,8 @@ class ExperimentSeries2D:
                         f'φ={fwhm / pr.fwhm:.3f} ' \
                         f'φ1={pr.phi1:.3f} ' \
                         f'φ2={pr.phi2:.3f}\n'
-            _ = ax.plot(pr.r, pr.R, label=label_text)
-        ax.set_ylabel('R/sJV')
+            _ = ax.plot(pr.r, pr.__getattribute__(var), label=label_text)
+        ax.set_ylabel(y_label)
         ax.set_xlabel('r')
         plt.legend(fontsize=6, loc='upper right')
         plt.show()

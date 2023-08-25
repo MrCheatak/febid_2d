@@ -133,7 +133,7 @@ def generate_db(fname='database.db'):
             pr.st_dev = st_dev
             bonds = pr.get_bonds()
             r = np.arange(-bonds, bonds, pr.step)
-            f = pr.get_gauss(r)
+            f = pr.get_beam(r)
             for D in D_vals:
                 pr.D = D
                 for tau in tau_vals:

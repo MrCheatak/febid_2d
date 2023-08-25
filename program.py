@@ -123,7 +123,13 @@ def plot_freey(exps, x_name, y, y_name=None, title=None, color=None, logx=False,
 def loop_param(name, vals, pr_init, backend='cpu', mgr=None):
     if mgr:
         cp = current_process()
-        cp_id = cp._identity[0]-2
+        cp_id = cp._identity
+        if len(cp_id) < 1:
+            # This is Main Process
+            cp_id = 1
+        else:
+            # Child process
+            cp_id = cp._identity[0]-2
         l = mgr[cp_id]
         l[0] = 1
         l[1] = vals.size
