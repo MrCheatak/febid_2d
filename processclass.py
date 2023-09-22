@@ -185,7 +185,7 @@ class Experiment2D(ContinuumModel):
         dt = self.dt
         # Increasing magnitude of the calculated value to increase floating point calculations
         # Going from nm to 200 nm unit
-        unit = 100
+        unit = 1
         n0, F, sigma, D, step = self.scale_parameters_units(unit)
         f *= unit**2
         eps *= unit/10

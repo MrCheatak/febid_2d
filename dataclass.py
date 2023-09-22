@@ -1,5 +1,6 @@
 import numpy as np
 from math import sqrt, log
+from pickle import dump
 
 
 class ContinuumModel:
@@ -273,3 +274,12 @@ class ContinuumModel:
                f'phi1: {self.phi1:.3f}\n' \
                f'phi2: {self.phi2:.3f}\n'
         print(text)
+
+    def save_to_file(self, filename):
+        """
+        Save experiment to a file.
+        :param filename: full file name (including path and extension)
+        :return:
+        """
+        with open(filename, mode='wb') as f:
+            dump(self, f)

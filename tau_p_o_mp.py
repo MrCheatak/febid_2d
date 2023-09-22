@@ -203,6 +203,43 @@ def map_r4():
     map_2d(pr, (param_name1, param_name2), (vals1, vals2), n_threads=2, init_i=start)
 
 
+def map_r5():
+    """
+    Generates raw data for mapping on a tau/p_o grid.
+    Iterated variables: sqrt(D), f0
+
+    Resolutions:
+        tau_r - [1, 520, 0.3]
+        p_o - [0, 10, 0.007]
+    :return:
+    """
+    # Setting up
+    pr = Experiment2D()
+    # Initializing model
+    pr.n0 = 2.7  # 1/nm^2
+    pr.F = 730.0  # 1/nm^2/s
+    pr.s = 1.0
+    pr.V = 0.05  # nm^3
+    pr.tau = 2000e-6  # s
+    pr.D = 1 # nm^2/s
+    pr.sigma = 0.02  # nm^2
+    pr.f0 = 1e3
+    pr.fwhm = 50  # nm
+    pr.order = 1
+    pr.step = 0.1  # nm
+    pr.beam_type = 'super_gauss'
+    pr.nn = 4
+    param_name1 = 'D'
+    param_name2 = 'f0'
+    vals1 = np.power(np.arange(0, 7000+5, 5), 2)
+    # vals1 = [0]
+    vals2 = np.arange(1e3, 2e7+1e4, 1e4)
+    # vals2 = np.power(10, vals2).astype(int)
+    # exps_all = []
+    start = 302
+    map_2d(pr, (param_name1, param_name2), (vals1, vals2), n_threads=4, init_i=start)
+
+
 def track_progress(args):
     """
     Track progress for each argument.

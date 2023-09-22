@@ -3,8 +3,8 @@ import numpy as np
 
 
 def cl_boilerplate():
-    filename1 = 'C:\\Users\\sandr\\PycharmProjects\\febid_2d\\kernel.cl'
-    filename2 = 'C:\\Users\\sandr\\PycharmProjects\\febid_2d\\kernel_stencil.cl'
+    filename1 = 'kernel.cl'
+    filename2 = 'kernel_stencil.cl'
     with open(filename1, 'r', encoding='utf-8') as f:
         kernel = ''.join(f.readlines())
     with open('kernel_stencil.cl', 'r', encoding='utf-8') as f:
