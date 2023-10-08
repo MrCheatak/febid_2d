@@ -1,4 +1,5 @@
-from copy import deepcopy
+from copy import deepcopy, copy
+from multiprocessing import current_process
 from pickle import dump
 import numpy as np
 import matplotlib.pyplot as plt
@@ -18,16 +19,14 @@ class ExperimentSeries2D:
     def __init__(self):
         self._experiments = []
 
-    def add_experiment(self, pr: Experiment2D):
+    def add_experiment(self, pr):
         """
         Append an experiment to the series.
 
         :param pr: experiment instance
-        :return:
         """
-        self._experiments.append(deepcopy(pr))
+        self._experiments.append(pr)
         self.n_experiments += 1
-        return self._experiments
 
     def get_attr(self, name):
         """
@@ -36,10 +35,10 @@ class ExperimentSeries2D:
         :return:
         """
         try:
-            vals_list = [exp.__getattribute__(name) for exp in self._experiments]
+            vals_list = [getattr(exp, name) for exp in self._experiments]
         except AttributeError:
             try:
-                vals_list = self.__getattribute__(name)
+                vals_list = getattr(self, name)
             except AttributeError:
                 raise AttributeError(f'Attribute \'{name}\' not found!.')
         vals_arr = np.array(vals_list)
@@ -54,9 +53,7 @@ class ExperimentSeries2D:
         """
         r_max = np.zeros(self.n_experiments)
         for i, exp in enumerate(self._experiments):
-            r, R = exp.r, exp.R
-            maxima, _ = get_peak(r, R)
-            r_max[i] = maxima.max()
+            r_max[i] = exp.r_max
         return r_max
 
     @property
@@ -67,9 +64,7 @@ class ExperimentSeries2D:
         """
         R_max = np.zeros(self.n_experiments)
         for i, exp in enumerate(self._experiments):
-            r, R = exp.r, exp.R
-            _,maxima = get_peak(r, R)
-            R_max[i] = maxima.max()
+            R_max[i] = exp.R_max
         return R_max
 
     @property
@@ -80,11 +75,7 @@ class ExperimentSeries2D:
         """
         R_center = np.zeros(self.n_experiments)
         for i, exp in enumerate(self._experiments):
-            r, R = exp.r, exp.R
-            ind = (r==0).nonzero()[0]
-            if ind.size == 0:
-                ind = np.fabs(r).argmin()
-            R_center[i] = R[ind]
+            R_center[i] = exp.R_0
         return R_center
 
     def get_peak_twinning(self):
@@ -94,8 +85,7 @@ class ExperimentSeries2D:
         """
         twin_peak = np.zeros(self.n_experiments)
         for i, exp in enumerate(self._experiments):
-            r, R = exp.r, exp.R
-            maxima, _ = get_peak(r, R)
+            maxima = exp.r_max
             twin_peak[i] = (maxima > 1 and maxima > exp.step)
         return twin_peak
 
@@ -117,9 +107,10 @@ class ExperimentSeries2D:
         Get relative indent of the growth rate profiles with two maximums.
         :return:
         """
-        R_center = self.R_0
-        R_max = self.R_max
-        R_ind = (R_max - R_center) / R_max
+
+        R_ind = np.zeros(self.n_experiments)
+        for i, exp in enumerate(self._experiments):
+            R_ind[i] = exp.R_ind
         return R_ind
 
     def plot(self, var='R', label=True):
@@ -135,14 +126,14 @@ class ExperimentSeries2D:
         for pr in self._experiments:
             if label:
                 fwhm = deposit_fwhm(pr.r, pr.R)
-                label_text = f'{self.param}={pr.__getattribute__(self.param):.1e}\n'
+                label_text = f'{self.param}={getattr(pr, self.param):.1e}\n'
                 label_text += f'p_i={pr.p_i:.3f} ' \
                         f'ρ_o={pr.p_o:.3f} ' \
                         f'τ={pr.tau_r:.3f}\n' \
                         f'φ={fwhm / pr.fwhm:.3f} ' \
                         f'φ1={pr.phi1:.3f} ' \
                         f'φ2={pr.phi2:.3f}\n'
-            _ = ax.plot(pr.r, pr.__getattribute__(var), label=label_text)
+            _ = ax.plot_from_exps(pr.r, getattr(pr, var), label=label_text)
         ax.set_ylabel(y_label)
         ax.set_xlabel('r')
         plt.legend(fontsize=6, loc='upper right')
@@ -159,4 +150,52 @@ class ExperimentSeries2D:
 
 
     def __getitem__(self, key):
-        return self._experiments[key]
+        return deepcopy(self._experiments[key])
+
+
+def loop_param(name, vals, pr_init: Experiment2D, backend='cpu', mgr=None, **kwargs):
+    """
+    Iterate over a specified parameter, solve numerically and collect resulting experiments.
+    Multiprocessing-safe.
+
+    :param name: name of the iterated parameters
+    :param vals: values to iterate
+    :param pr_init: initial conditions
+    :param backend: compute on 'cpu' or 'gpu'
+    :param mgr: multiprocessing progress tracker
+    :return: ExperimentSeries2D
+    """
+    if mgr is not None:
+        cp = current_process()
+        cp_id = cp._identity
+        if len(cp_id) < 1:
+            # This is Main Process
+            cp_id = 1
+        else:
+            # Child process
+            cp_id = cp._identity[0] - 2
+        l = mgr[cp_id]
+        l[0] = 1
+        l[1] = vals.size
+        mgr[cp_id] = l
+    pr = copy(pr_init)
+    pr.backend = backend
+    r = pr.get_grid()
+    f = pr.get_beam(r)
+    n_a = pr.analytic(r)
+    exps = ExperimentSeries2D()
+    for val in vals:
+        setattr(pr, name, val)
+        if name in ['fwhm', 'f0', 'st_dev']:
+            bonds = pr.get_bonds()
+            r = np.arange(-bonds, bonds, pr.step)
+            f = pr.get_beam(r)
+            n_a = pr.analytic(r)
+        pr.solve_steady_state(r, f, n_init=n_a, **kwargs)
+        exps.add_experiment(pr)
+        if mgr is not None:
+            l = mgr[cp_id]
+            l[0] += 1
+            mgr[cp_id] = l
+    exps.param = name
+    return exps

@@ -2,242 +2,29 @@
 Module for running series of experiments using multiprocessing.
 """
 
-import copy
+from copy import copy
 import os
 import time
 import timeit
-import pickle
 import traceback
 
 import numpy as np
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 from processclass import Experiment2D
-from program import loop_param, plot
+from experimentsclass import loop_param
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Manager, Process
+import pyopencl as cl
 
-
-pr = Experiment2D()
-# Initializing model
-pr.n0 = 2.7  # 1/nm^2
-pr.F = 730.0  # 1/nm^2/s
-pr.s = 1.0
-pr.V = 0.05  # nm^3
-pr.tau = 100e-6  # s
-pr.D = 8e5  # nm^2/s
-pr.sigma = 0.02  # nm^2
-pr.f0 = 1.0e7
-pr.fwhm = 50  # nm
-pr.order = 1
-pr.step = 0.5  # nm
 
 
 def progress_callback(future):
     print('.', end='', flush=True)
 
 
-def write_to_file(fname, names, *args):
-    n = len(args)
-    if not os.path.exists(fname):
-        with open(fname, mode='x') as f:
-            header = '\t'.join(names) + '\n'
-            f.write(header)
-            text = ''
-            for i in range(args[1].size):
-                for j in range(n):
-                    text += f'{args[j][i]}\t'
-                text += '\n'
-                f.write(text)
-                text = ''
-    else:
-        with open(fname, mode='a') as f:
-            text = ''
-            for i in range(args[1].size):
-                for j in range(n):
-                    text += f'{args[j][i]}\t'
-                text += '\n'
-                f.write(text)
-                text = ''
-
-
-def dispatch(*args):
-    exps = loop_param(*args)
+def dispatch(*args, **kwargs):
+    exps = loop_param(*args, **kwargs)
     return exps
-
-
-def map_r1():
-    """
-    Generates raw data for mapping on a tau/p_o grid.
-    Iterated variables: sqrt(D), f0
-
-    Resolutions:
-        tau_r - [1.389, 97.978, 389]
-        p_o - [0, 1.17621, 0.00789]
-    :return:
-    """
-    # Setting up
-    fname = 'tau_p_3.txt'
-    pr = Experiment2D()
-    # Initializing model
-    pr.n0 = 2.7  # 1/nm^2
-    pr.F = 730.0  # 1/nm^2/s
-    pr.s = 1.0
-    pr.V = 0.05  # nm^3
-    pr.tau = 100e-6  # s
-    pr.D = 8e5  # nm^2/s
-    pr.sigma = 0.02  # nm^2
-    pr.f0 = 1.0e7
-    pr.fwhm = 50  # nm
-    pr.order = 1
-    pr.step = 0.5  # nm
-
-    param_name1 = 'D'
-    param_name2 = 'f0'
-    vals1 = np.power(np.arange(0, 3000, 20), 2)
-    vals2 = np.arange(2e5, 5e7, 2e5)
-    map_2d_mp(pr, (param_name1, param_name2), (vals1, vals2))
-
-
-def map_r2():
-    """
-    Generates raw data for mapping on a tau/p_o grid.
-    Iterated variables: sqrt(D), f0
-
-    Resolutions:
-        tau_r - [1, 10000, 0.5]
-        p_o - [0, 100, 0.00755]
-    :return:
-    """
-    # Setting up
-    fname = 'tau_p_6.1.txt'
-    pr = Experiment2D()
-    # Initializing model
-    pr.n0 = 2.7  # 1/nm^2
-    pr.F = 730.0  # 1/nm^2/s
-    pr.s = 1.0
-    pr.V = 0.05  # nm^3
-    pr.tau = 2000e-6  # s
-    pr.D = 1 # nm^2/s
-    pr.sigma = 0.02  # nm^2
-    pr.f0 = 1e3
-    pr.fwhm = 20  # nm
-    pr.order = 1
-    pr.step = 0.5  # nm
-    param_name1 = 'D'
-    param_name2 = 'f0'
-    vals1 = np.power(np.arange(2.1*97, 14100+2.1, 2.1), 2)
-    vals2 = np.arange(1e3, 1.6e8+7.5e3, 7.5e3)
-    map_2d_mp(pr, (param_name1, param_name2), (vals1, vals2))
-
-
-def map_r3():
-    """
-    Generates raw data for mapping on a tau/p_o grid.
-    Iterated variables: sqrt(D), f0
-
-    Resolutions:
-        tau_r - [1, 2000, 0.3]
-        p_o - [0, 50, 0.008]
-    :return:
-    """
-    # Setting up
-    fname = 'tau_p_8.txt'
-    pr = Experiment2D()
-    # Initializing model
-    pr.n0 = 2.7  # 1/nm^2
-    pr.F = 730.0  # 1/nm^2/s
-    pr.s = 1.0
-    pr.V = 0.05  # nm^3
-    pr.tau = 2000e-6  # s
-    pr.D = 1 # nm^2/s
-    pr.sigma = 0.02  # nm^2
-    pr.f0 = 1e3
-    pr.fwhm = 20  # nm
-    pr.order = 1
-    pr.step = 0.1  # nm
-    param_name1 = 'D'
-    param_name2 = 'f0'
-    vals1 = np.power(np.arange(0, 14100+2, 2), 2)
-    # vals1 = [0]
-    vals2 = np.arange(1e3, 8e7+3.5e4, 1e4)
-    # vals2 = np.power(10, vals2).astype(int)
-    # exps_all = []
-    start = 7000
-    map_2d_mp(pr, (param_name1, param_name2), (vals1, vals2), n_threads=2, init_i=start)
-
-
-def map_r4():
-    """
-    Generates raw data for mapping on a tau/p_o grid.
-    Iterated variables: sqrt(D), f0
-
-    Resolutions:
-        tau_r - [1, 520, 0.3]
-        p_o - [0, 10, 0.007]
-    :return:
-    """
-    # Setting up
-    fname = 'tau_p_8.txt'
-    pr = Experiment2D()
-    # Initializing model
-    pr.n0 = 2.7  # 1/nm^2
-    pr.F = 730.0  # 1/nm^2/s
-    pr.s = 1.0
-    pr.V = 0.05  # nm^3
-    pr.tau = 2000e-6  # s
-    pr.D = 1 # nm^2/s
-    pr.sigma = 0.02  # nm^2
-    pr.f0 = 1e3
-    pr.fwhm = 50  # nm
-    pr.order = 1
-    pr.step = 0.1  # nm
-    param_name1 = 'D'
-    param_name2 = 'f0'
-    vals1 = np.power(np.arange(0, 7000+5, 5), 2)
-    # vals1 = [0]
-    vals2 = np.arange(1e3, 2e7+1e4, 1e4)
-    # vals2 = np.power(10, vals2).astype(int)
-    # exps_all = []
-    start = 64
-    map_2d(pr, (param_name1, param_name2), (vals1, vals2), n_threads=2, init_i=start)
-
-
-def map_r5():
-    """
-    Generates raw data for mapping on a tau/p_o grid.
-    Iterated variables: sqrt(D), f0
-
-    Resolutions:
-        tau_r - [1, 520, 0.3]
-        p_o - [0, 10, 0.007]
-    :return:
-    """
-    # Setting up
-    pr = Experiment2D()
-    # Initializing model
-    pr.n0 = 2.7  # 1/nm^2
-    pr.F = 730.0  # 1/nm^2/s
-    pr.s = 1.0
-    pr.V = 0.05  # nm^3
-    pr.tau = 2000e-6  # s
-    pr.D = 1 # nm^2/s
-    pr.sigma = 0.02  # nm^2
-    pr.f0 = 1e3
-    pr.fwhm = 50  # nm
-    pr.order = 1
-    pr.step = 0.1  # nm
-    pr.beam_type = 'super_gauss'
-    pr.nn = 4
-    param_name1 = 'D'
-    param_name2 = 'f0'
-    vals1 = np.power(np.arange(0, 7000+5, 5), 2)
-    # vals1 = [0]
-    vals2 = np.arange(1e3, 2e7+1e4, 1e4)
-    # vals2 = np.power(10, vals2).astype(int)
-    # exps_all = []
-    start = 302
-    map_2d(pr, (param_name1, param_name2), (vals1, vals2), n_threads=4, init_i=start)
 
 
 def track_progress(args):
@@ -248,7 +35,7 @@ def track_progress(args):
     Should be launched as subprocess and terminated explicitly.
     There should be no other output to console.
 
-    :param args: a tuple of current iteration and total N of iterations of a tracked task
+    :param args: a tuple of current iteration and total N of iterations for each tracked task
     :return:
     """
     pbs = [tqdm(total=args[i][1], initial=args[i][0], position=i, leave=False, ncols=80, desc=f'Process {i}') for i in range(len(args))]
@@ -268,17 +55,19 @@ def track_progress(args):
         pbs[i].refresh()
 
 
-def map_2d_mp(pr, names, vals, fname='exps', n_threads=4, init_i=0):
+def map_2d_mp(pr_init, names, vals, fname='exps', n_threads=4, init_i=0, backend='cpu'):
     """
     Run scan across two base parameters and dump results to disk.
-    Uses multiple CPU cores.
+    Uses multiple CPU or GPU cores.
 
-    :param pr: Experiment instance with initial conditions
+    :param pr_init: Experiment instance with initial conditions
     :param names: two parameter names
     :param vals: two value collections
     :param fname: base name for files
     :param n_threads: number of CPU cores to use
     :param init_i: skip values of the first parameter
+    :param backend: use 'cpu' or 'gpu'
+
     :return:
     """
     print(f'Running mapping task. Scanning across {names[0]} and {names[1]} parameters. \n'
@@ -286,10 +75,6 @@ def map_2d_mp(pr, names, vals, fname='exps', n_threads=4, init_i=0):
           f'Grid size: {vals[0].size} * {vals[1].size} = {vals[0].size * vals[1].size} virtual experiments.')
     if init_i:
         print(f'Continuing from Experiments Set No.{init_i}: {names[0]}={vals[0][init_i]}\n')
-    ###Testing
-    backend = 'gpu'
-    ###
-
 
     start = timeit.default_timer()
     # Per process progress tracking setup
@@ -301,18 +86,17 @@ def map_2d_mp(pr, names, vals, fname='exps', n_threads=4, init_i=0):
     l[0] = init_i
     progress[0] = l
     progress_process = Process(target=track_progress, args=[progress])
-
+    pr = copy(pr_init)
     with ProcessPoolExecutor(max_workers=n_threads) as executor:
         futures = []
         for i in range(init_i, vals[0].size):
             val = vals[0][i]
-            pr1 = copy.deepcopy(pr)
-            pr1.__setattr__(names[0], val)
+            pr.__setattr__(names[0], val)
             # if i % n_threads//2 == 0:
             #     backend = 'cpu'
             # else:
             #     backend = 'gpu'
-            fut = executor.submit(dispatch, names[1], vals[1], pr1, backend, progress)
+            fut = executor.submit(dispatch, names[1], vals[1], pr, backend, progress)
             # fut.add_done_callback(progress_callback)
             fut.__setattr__('id', i)
             futures.append(fut)
@@ -324,13 +108,8 @@ def map_2d_mp(pr, names, vals, fname='exps', n_threads=4, init_i=0):
                 tb = traceback.format_exc()
                 print(f'Encountered an error while processing Experiments Set {fut.id}: {fut.exception().args}, {fut.exception().with_traceback(tb)}, skipping')
                 traceback.print_tb()
-            directory = 'sim_data'
-            filename = f'{fname}_{fut.id}.obj'
-            filepath = os.path.join(directory, filename)
+            filepath = f'{fname}_{fut.id}.obj'
             exps.save_to_file(filepath)
-            # with open(filepath, mode='wb') as f:
-            #     pickle.dump(exps, f)
-            #     print(f'Wrote {fut.id}')
             l = progress[0]
             l[0] += 1
             progress[0] = l
@@ -339,17 +118,18 @@ def map_2d_mp(pr, names, vals, fname='exps', n_threads=4, init_i=0):
     print(f'Took {dt:.3f} s')
 
 
-def map_2d(pr, names, vals, fname='exps', n_threads=1, init_i=0):
+def map_2d(pr_init, names, vals, fname='exps', n_threads=1, init_i=0, backend='cpu'):
     """
     Run scan across two base parameters and dump results to disk.
-    Uses multiple CPU cores.
 
-    :param pr: Experiment instance with initial conditions
+    :param pr_init: Experiment instance with initial conditions
     :param names: two parameter names
     :param vals: two value collections
     :param fname: base name for files
     :param n_threads: number of CPU cores to use
     :param init_i: skip values of the first parameter
+    :param backend: use 'cpu' or 'gpu'
+
     :return:
     """
     print(f'Running mapping task. Scanning across {names[0]} and {names[1]} parameters. \n'
@@ -357,11 +137,9 @@ def map_2d(pr, names, vals, fname='exps', n_threads=1, init_i=0):
           f'Grid size: {vals[0].size} * {vals[1].size} = {vals[0].size * vals[1].size} virtual experiments.')
     if init_i:
         print(f'Continuing from Experiments Set No.{init_i}: {names[0]}={vals[0][init_i]}\n')
-    ###Testing
-    backend = 'gpu'
-    ###
 
     # Per process progress tracking setup
+    progress = None
     mgr = Manager()
     progress = mgr.list()
     [progress.append([0, 0]) for i in range(1+1)]
@@ -371,27 +149,30 @@ def map_2d(pr, names, vals, fname='exps', n_threads=1, init_i=0):
     progress[0] = l
     progress_process = Process(target=track_progress, args=[progress])
     progress_process.start()
+    platforms = cl.get_platforms()
+    devices = platforms[0].get_devices()
 
+    ctx = cl.Context(devices)
+    queue = cl.CommandQueue(ctx)
+    kwargs = {'ctx': ctx, 'queue': queue}
+    pr = copy(pr_init)
     start = timeit.default_timer()
 
     for i in range(init_i, vals[0].size):
         val = vals[0][i]
-        pr1 = copy.deepcopy(pr)
-        pr1.__setattr__(names[0], val)
+        pr.__setattr__(names[0], val)
         # if i % n_threads//2 == 0:
         #     backend = 'cpu'
         # else:
         #     backend = 'gpu'
         try:
-            exps = dispatch(names[1], vals[1], pr1, backend, progress)
+            exps = dispatch(names[1], vals[1], pr, backend, progress, **kwargs)
         except Exception as e:
             tb = traceback.format_exc()
             print(f'Encountered an error while processing Experiments Set {i}: {e.args}, {e.with_traceback(tb)}, skipping')
             traceback.print_tb()
             continue
-        directory = 'sim_data'
-        filename = f'{fname}_{i}.obj'
-        filepath = os.path.join(directory, filename)
+        filepath = f'{fname}_{i}.obj'
         exps.save_to_file(filepath)
         l = progress[0]
         l[0] += 1
@@ -402,6 +183,27 @@ def map_2d(pr, names, vals, fname='exps', n_threads=1, init_i=0):
 
 
 if __name__ == '__main__':
-    dir = 'sim_data'
-    map_r4()
+    pass
+    fname = r'sim_data\test'
+    pr = Experiment2D()
+    # Initializing model
+    pr.n0 = 2.7  # 1/nm^2
+    pr.F = 730.0  # 1/nm^2/s
+    pr.s = 1.0
+    pr.V = 0.05  # nm^3
+    pr.tau = 2000e-6  # s
+    pr.D = 0 # nm^2/s
+    pr.sigma = 0.02  # nm^2
+    pr.f0 = 1e3
+    pr.fwhm = 50  # nm
+    pr.step = 0.1  # nm
+    pr.beam_type = 'super_gauss'
+    pr.order = 4
+    param_name1 = 'D'
+    param_name2 = 'f0'
+    vals1 = np.array([1e5, 1e6, 1e7])
+    # vals1 = [0]
+    vals2 = np.arange(1e3, 8e7+3.5e4, 1e4)
+    pr.solve_steady_state(progress=True)
 
+    map_2d(pr, (param_name1, param_name2), (vals1, vals2), fname=fname, backend='gpu')

@@ -3,13 +3,13 @@ import numpy as np
 
 
 def cl_boilerplate():
-    filename1 = 'kernel.cl'
-    filename2 = 'kernel_stencil.cl'
-    with open(filename1, 'r', encoding='utf-8') as f:
-        kernel = ''.join(f.readlines())
-    with open('kernel_stencil.cl', 'r', encoding='utf-8') as f:
-        kernel_stencil = ''.join(f.readlines())
-    kernel_jit = ''
+    # filename1 = 'kernel.cl'
+    # filename2 = 'kernel_stencil.cl'
+    # with open(filename1, 'r', encoding='utf-8') as f:
+    #     kernel = ''.join(f.readlines())
+    # with open('kernel_stencil.cl', 'r', encoding='utf-8') as f:
+    #     kernel_stencil = ''.join(f.readlines())
+    # kernel_jit = ''
 
     platforms = cl.get_platforms()
     devices = platforms[0].get_devices()
@@ -20,10 +20,11 @@ def cl_boilerplate():
     # print(f'Using  {devices[0].name}')
     queue = cl.CommandQueue(context)
 
-    program1 = cl.Program(context, kernel).build()
-    program2 = cl.Program(context, kernel_stencil).build()
+    # program1 = cl.Program(context, kernel).build()
+    # program2 = cl.Program(context, kernel_stencil).build
+    program = None
 
-    return context, (program1, program2), queue
+    return context, program, queue
 
 
 def reaction_diffusion_jit(s, F, n0, tau, sigma, D, step, dt, global_size, local_size):
@@ -91,7 +92,7 @@ __kernel void stencil_operator_local_mem(__global float* input, __global float* 
         }
 
 
-__kernel void stencil_rde(__global double* array, __global double* array1, int loops, int size)
+__kernel void stencil_rde(__global double* array, __global double* array1, int loops, int size, __global double* array2)
 {
     // Shared memory for caching array elements
     __local double local_array[%(local_size)d+2];
@@ -105,6 +106,9 @@ __kernel void stencil_rde(__global double* array, __global double* array1, int l
     __private double stencil_value;
     __private double coeff;
     __local double n;
+    __global double* readFrom = array;
+    __global double* writeTo = array2;
+    __global double* temp;
     
     int gid = get_global_id(0);
     int lid = get_local_id(0);
@@ -132,6 +136,7 @@ __kernel void stencil_rde(__global double* array, __global double* array1, int l
     
     for (i = 0; i < loops; i++)
     {   
+        
         // Update shared memory for the next iteration
         //if (lid == 0) 
         //{   
@@ -152,20 +157,23 @@ __kernel void stencil_rde(__global double* array, __global double* array1, int l
         //}
         if (gid > 0 && gid < size - 1)
         {
-            stencil_value = array[gid - 1] - 2 * array[gid] + array[gid + 1];
+            stencil_value = readFrom[gid - 1] - 2 * readFrom[gid] + readFrom[gid + 1];
         }
         
         barrier(CLK_GLOBAL_MEM_FENCE);
         
         // RDE calculation
         // n = local_array[local_index];
-        n = array[gid];
+        n = readFrom[gid];
         // array[gid] += sFdt - n * sFn0dt - n * taudt - n * f_local[lid] * dt * 1e-6  + Dsdt * stencil_value;
-        array[gid] += sFdt - n * coeff + Dsdt * stencil_value;
+        writeTo[gid] = n + sFdt - n * coeff + Dsdt * stencil_value;
         // array[gid] += dt * (s * F * (1 - n / n0) - n / tau - n * sigma * array1[gid] + D * array2[gid] / step_x / step_x) * 1e-6;
         // array[gid] += Dsdt * stencil_value;
                
         barrier(CLK_GLOBAL_MEM_FENCE);
+        temp = readFrom;
+        readFrom = writeTo;
+        writeTo = temp;
     }
 }
 

@@ -2,7 +2,6 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 
-import program
 from processclass import Experiment2D
 from analyse import get_peak, deposit_fwhm
 
@@ -194,7 +193,7 @@ class PSO_Optimizer():
         fig, ax = plt.subplots()
         position = (0.02, 0.76)
         # _ = ax.plot(self.r_ref, self.R_ref, label='Reference')
-        _ = ax.plot(self.pr.r, self.pr.R, label='Solution')
+        _ = ax.plot_from_exps(self.pr.r, self.pr.R, label='Solution')
         plt.text(*position, text, transform=ax.transAxes, fontsize=6, snap=True)
         plt.legend()
         plt.show()

@@ -1,7 +1,8 @@
-numpy
-scipy
+numpy==1.26.0
+scipy==1.11.3
 numexpr_mod
-pyopencl
-tqdm
-matplotlib
+pyopencl==2023.1.2
+tqdm==4.66.1
+matplotlib==3.8.0
 jupyter
+pandas==2.1.1

@@ -31,16 +31,20 @@ def convergence_analysis(y1, y2):
 
 def get_peak(x, y, sp=None):
     """
-    Get all peaks of a curve
+    Get all peaks of a curve.
     :param x: x-coordinates
     :param y: y-coordinates
-    :return: [x positions], [y positions]
+    :param sp: interpolation function
+    :return: x position, y position
     """
     if sp is None:
         sp = CubicSpline(x, y)
     def obj_func(f):
         return -sp(f)
-    res = minimize_scalar(obj_func, bounds=(0, x.max()), method='bounded')
+    n = x.size // 2 # center
+    ind = (y[n:] > 1e-8).nonzero()[0][-1] # for reduction of the optimization window
+    x_max = x[n+ind]
+    res = minimize_scalar(obj_func, bounds=(0, x_max), method='bounded')
     # maxima = argextr(y, np.greater)
     # y_max = y[maxima]
     # x_max = x[maxima]
