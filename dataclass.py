@@ -3,10 +3,18 @@ from math import sqrt, log
 from pickle import dump
 from beam_settings import BeamSettings
 
+
 class ContinuumModel(BeamSettings):
+    """
+    The class represents single precursor Continuum Model with diffusion.
+    It contains all parameters including base precursor, beam and process parameters.
+    Process parameters such as depletion or replenishment rate are calculated according to the model.
+    The class also provides an appropriate time step for numerical solution.
+    """
     def __init__(self):
         super().__init__()
         self.name = ''
+        self.base_params = ['s', 'F', 'n0', 'tau', 'sigma', 'f0', 'D', 'V']
         self.s = 1.0
         self.F = 1.0  # 1/nm^2/s
         self.n0 = 1.0  # 1/nm^2
@@ -23,6 +31,8 @@ class ContinuumModel(BeamSettings):
         self._dt_des = np.nan
         self._dt_diss = np.nan
 
+        self.process_attrs = ['kd', 'kr', 'nd', 'nr', 'tau_in', 'tau_out', 'tau_r', 'p_in', 'p_out', 'p_i', 'p_o',
+                              'phi1', 'phi2']
         self._kd = np.nan
         self._kr = np.nan
         self._nd = np.nan
@@ -190,7 +200,7 @@ class ContinuumModel(BeamSettings):
         First scaling law. Applies only to gaussian beams.
         :return:
         """
-        self._phi1 = np.sqrt(np.log2(1 + self.tau_r))
+        self._phi1 = np.power(np.log2(1 + self.tau_r), 1 / 2 / self.order)
         return self._phi1
 
     @property
@@ -201,39 +211,16 @@ class ContinuumModel(BeamSettings):
         :return:
         """
         if self.p_o != 0:
-            self._phi2 = np.sqrt(np.log2(2 + (self.tau_r - 1) / (1 + self.p_o ** 2)))
+            self._phi2 = np.power(np.log2(2 + (self.tau_r - 1) / (1 + self.p_o ** 2)), 1 / 2 / self.order)
         else:
             self._phi2 = np.nan
         return self._phi2
 
     def print_initial_parameters(self):
-        text = (f''
-                f's: {self.s:.4f}\n'
-                f'F: {self.F:.0f}\n'
-                f'n0: {self.n0:.2f}\n'
-                f'tau: {self.tau:.6f}\n'
-                f'sigma: {self.sigma:.4f}\n'
-                f'f0: {self.f0:.0f}\n'
-                f'D: {self.D:.0f}\n'
-                f'fwhm: {self.fwhm:.1f}\n')
-        print(text)
+        self._print_params(self.base_params)
 
     def print_process_attributes(self):
-        text = f'' \
-               f'kd: {self.kd:.0f}\n' \
-               f'kr: {self.kr:.1f}\n' \
-               f'nd: {self.nd:.3e}\n' \
-               f'nr: {self.nr:.4f}\n' \
-               f'tau_in: {self.tau_in:.3e}\n' \
-               f'tau_out: {self.tau_out:.3e}\n' \
-               f'tau_r: {self.tau_r:.2f}\n' \
-               f'p_in: {self.p_in:3f}\n' \
-               f'p_out: {self.p_out:3f}\n' \
-               f'p_i: {self.p_i:3f}\n' \
-               f'p_o: {self.p_o:.3f}\n' \
-               f'phi1: {self.phi1:.3f}\n' \
-               f'phi2: {self.phi2:.3f}\n'
-        print(text)
+        self._print_params(self.process_attrs)
 
     def save_to_file(self, filename):
         """
@@ -243,3 +230,8 @@ class ContinuumModel(BeamSettings):
         """
         with open(filename, mode='wb') as f:
             dump(self, f)
+
+
+if __name__ == '__main__':
+    var = ContinuumModel()
+    var.F = 0

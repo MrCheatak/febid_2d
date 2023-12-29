@@ -9,7 +9,7 @@ from scipy.interpolate import CubicSpline, PchipInterpolator, Akima1DInterpolato
 
 from pycl_test import cl_boilerplate, reaction_diffusion_jit
 from dataclass import ContinuumModel
-from analyse import get_peak
+from analyse import get_peak, deposit_fwhm
 from beam_profile import generate_profile
 from electron_flux import EFluxEstimator
 
@@ -42,12 +42,14 @@ class Experiment2D(ContinuumModel):
         return dict(s=self.s, F=self.F, n0=self.n0, tau=self.tau,
                     sigma=self.sigma, D=self.D, dt=self.dt, step=self.step)
 
-    def get_beam(self, r):
+    def get_beam(self, r=None):
         """
         Generate electron beam profile based on a Gaussian.
         :param r: radially symmetric grid
         :return:
         """
+        if r is None:
+            r = self.get_grid()
         self.f = self.f0 * generate_profile(r, self.beam_type, self.st_dev, self.order)
         return self.f
 
@@ -205,6 +207,7 @@ class Experiment2D(ContinuumModel):
             t = tqdm(total=n_iters)
         else:
             t = None
+        warning = 0
         i = 0
         iter_jump = 500000
         while i < n_iters:
@@ -234,12 +237,15 @@ class Experiment2D(ContinuumModel):
                 break
             if i % prediction_step == 0:
                 a, b = self.__fit_exponential(iters, norm_array)
-                skip = int(
+                skip1 = int(
                     (np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
-                if skip > n_iters:
+                if skip1 > n_iters:
                     raise IndexError('Reached maximum number of iterations!')
-                if skip < 0:
-                    raise IndexError('Instability in solution, accuracy decrease trend.')
+                if skip1 < 0:
+                    warning += 1
+                    skip *= 2
+                    if warning > 2:
+                        raise IndexError('Instability in solution, accuracy decrease trend.')
                 prediction_step = skip  # next prediction will be after another norm is calculated
                 n_predictions += 1
                 if t:
@@ -302,7 +308,11 @@ class Experiment2D(ContinuumModel):
         Define boundaries for the grid based on beam settings.
         :return: float
         """
-        r_lim = math.fabs((math.log(self.f0, 8) / 3) * (self.st_dev * 3))
+        if self.beam_type == 'super_gauss':
+            n = self.order
+        else:
+            n = 1
+        r_lim = math.fabs((math.log(self.f0 + 1, 8) / 3 + 1) * (self.st_dev * 3)/(1.7+math.log(n)))
         return r_lim
 
     @property
@@ -357,17 +367,14 @@ class Experiment2D(ContinuumModel):
         """
         if self._interp is None:
             self.interpolate('R')
-        R_0 = self._interp(0)
+        R_0 = float(self._interp(0))
         return R_0
 
     @property
     def R_ind(self):
         """
-        Relative indent of a 'volcano' deposit.
-        :return:
-        """
-        """
-        Get relative indent of the growth rate profile with two maximums.
+        Relative indent of an indented deposit.
+        Normalized by Maxinum height, thus this parameter max value is 1.
         :return:
         """
         R_center = self.R_0
@@ -375,6 +382,24 @@ class Experiment2D(ContinuumModel):
         R_ind = (R_max - R_center) / R_max
         R_ind = np.round(R_ind, 8)
         return R_ind
+
+    @property
+    def R_ind1(self):
+        """
+        Relative indent of an indented deposit.
+        Normalized by indent height, thus this parameter max value is inf.
+        :return:
+        """
+        R_center = self.R_0
+        R_max = self.R_max
+        R_ind = (R_max - R_center) / R_center
+        R_ind = np.round(R_ind, 8)
+        return R_ind
+
+    @property
+    def fwhm_d(self):
+        fwhm_d = deposit_fwhm(self.r, self.R)
+        return fwhm_d
 
     def scale_parameters_units(self, scale=100):
         """
@@ -415,7 +440,7 @@ class Experiment2D(ContinuumModel):
         y = self.__getattribute__(var)
         if y is None:
             raise ValueError(f'The attribute \'{var}\' is not set.')
-        line, = ax.plot(x, y, )
+        line, = ax.plot(x, y)
         plt.show()
 
     def interpolate(self, var):
@@ -436,15 +461,6 @@ class Experiment2D(ContinuumModel):
             raise ArithmeticError('Interpolation method not recognized. Use cubic, pchip, akima or spline')
         self._interp = sp1
         return sp1
-
-    def save_to_file(self, filename):
-        """
-        Save experiment to a file.
-        :param filename: full file name (including path and extension)
-        :return:
-        """
-        with open(filename, mode='wb') as f:
-            dump(self, f)
 
     def estimate_se_flux(self, ie, yld):
         """
@@ -476,3 +492,26 @@ class Experiment2D(ContinuumModel):
         pr.order = self.order
         pr.backend = self.backend
         return pr
+
+
+if __name__ == '__main__':
+    pr = Experiment2D()
+    pr.n0 = 2.8  # 1/nm^2
+    pr.F = 1730.0  # 1/nm^2/s
+    pr.s = 0.1
+    pr.V = 0.05  # nm^3
+    pr.tau =  500e-6  # s
+    pr.D = 5e5  # nm^2/s
+    pr.sigma = 0.022  # nm^2
+    pr.fwhm = 500  # nm
+    pr.f0 = 5e7
+    pr.step = pr.fwhm // 200  # nm
+    pr.beam_type = 'super_gauss'
+    pr.order = 4
+    pr.solve_steady_state(progress=True)
+    pr.plot('R')
+    pr.plot('f')
+    pr.plot('n')
+    print(pr.r_max/pr.fwhm)
+
+

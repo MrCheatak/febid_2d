@@ -1,23 +1,23 @@
-import math
 import numpy as np
 import numexpr_mod as ne
-import pyopencl as cl
-from tqdm import tqdm
 
 from processclass import Experiment2D
 
 
 class Experiment2D_Dimensionless(Experiment2D):
-
+    """
+    Class representing a virtual experiment with beam settings and dimensionless parameters.
+    It allows calculation of a 2D precursor coverage and growth rate profiles based on the set conditions.
+    """
     def __init__(self, backend='cpu'):
         super().__init__()
         self.backend = backend
         self._numexpr_name = 'r_e'
         self._step = np.nan
-        self.tau_r = 1
-        self.p_o = 1
-        self.step = 1
-        self.fwhm = 1
+        self.tau_r = 1.0
+        self.p_o = 1.0
+        self.step = 1.0
+        self.fwhm = 1.0
         self.f = 0.0
         k = 0.0
         n = 0.0
@@ -26,6 +26,13 @@ class Experiment2D_Dimensionless(Experiment2D):
         ne.cache_expression("(1 - k * n + p_o**2*n_D/step**2)*dt + n", self._numexpr_name,
                             local_dict=local_dict)
 
+        self.s = np.nan
+        self.F = np.nan
+        self.n0 = np.nan
+        self.tau = np.nan
+        self.sigma = np.nan
+        self.D = np.nan
+        self.V = np.nan
     @property
     def _local_dict(self):
         k = (self.tau_r - 1) / self.f0 * self.f + 1
@@ -98,4 +105,39 @@ class Experiment2D_Dimensionless(Experiment2D):
         return n
 
     def __numeric_gpu(self, *args, **kwargs):
+        print('GPU backend not implemented, defaulting to CPU.')
+        self.backend = 'cpu'
         return self.__numeric(*args, **kwargs)
+
+    def __copy__(self):
+        pr = Experiment2D_Dimensionless()
+        pr.f0 = self.f0
+        pr.fwhm = self.fwhm
+        pr.beam_type = self.beam_type
+        pr.order = self.order
+        pr.tau_r = self.tau_r
+        pr.p_o = self.p_o
+        pr.step = self.step
+        pr.backend = self.backend
+        return pr
+
+
+if __name__ == '__main__':
+    from analyse import deposit_fwhm as df
+    pr_d = Experiment2D_Dimensionless()
+
+    pr_d.tau_r = 20
+    pr_d.p_o = 0.6
+    pr_d.f0 = 9e5
+    pr_d.beam_type = 'super_gauss'
+    pr_d.order = 4
+    pr_d.fwhm = 1400
+    pr_d.step = pr_d.fwhm // 200
+    pr_d.solve_steady_state(progress=True)
+    pr_d.plot('R')
+    print([pr_d.fwhm_d, pr_d.fwhm])
+    print([pr_d.fwhm_d/pr_d.fwhm, pr_d.phi2])
+    print([2*pr_d.r_max/pr_d.fwhm, pr_d.R_ind1])
+    a = 0
+
+

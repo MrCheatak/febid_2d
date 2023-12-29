@@ -25,7 +25,8 @@ class ExperimentSeries2D:
 
         :param pr: experiment instance
         """
-        self._experiments.append(pr)
+        pr1 = deepcopy(pr)
+        self._experiments.append(pr1)
         self.n_experiments += 1
 
     def get_attr(self, name):
@@ -113,8 +114,17 @@ class ExperimentSeries2D:
             R_ind[i] = exp.R_ind
         return R_ind
 
-    def plot(self, var='R', label=True):
-        if var=='R':
+    def plot(self, var='R', legend=True, norm_x=True, file=None):
+        """
+        Plot any of the 'growth rate', 'electron flux' or 'precursor covarage' profiles.
+
+        :param var: 'R' for growth rate, 'f' for electron flux, 'n' for precursor covarage
+        :param legend: if True, includes a legend
+        :param norm_x: if True, normalizes x-axis by the beam FWHM
+        :param file: if a filename is provided, saves a screenshot
+        :return:
+        """
+        if var == 'R':
             y_label = 'R/sJV'
         elif var == 'n':
             y_label = 'n'
@@ -124,7 +134,7 @@ class ExperimentSeries2D:
         fig, ax = plt.subplots()
         label_text = None
         for pr in self._experiments:
-            if label:
+            if legend:
                 fwhm = deposit_fwhm(pr.r, pr.R)
                 label_text = f'{self.param}={getattr(pr, self.param):.1e}\n'
                 label_text += f'p_i={pr.p_i:.3f} ' \
@@ -133,10 +143,15 @@ class ExperimentSeries2D:
                         f'φ={fwhm / pr.fwhm:.3f} ' \
                         f'φ1={pr.phi1:.3f} ' \
                         f'φ2={pr.phi2:.3f}\n'
-            _ = ax.plot_from_exps(pr.r, getattr(pr, var), label=label_text)
+            r = pr.r
+            if norm_x:
+                r = 2 * r / pr.fwhm
+            _ = ax.plot(r, getattr(pr, var), label=label_text)
         ax.set_ylabel(y_label)
         ax.set_xlabel('r')
         plt.legend(fontsize=6, loc='upper right')
+        if file:
+            plt.savefig(file)
         plt.show()
 
     def save_to_file(self, filename):
@@ -153,13 +168,16 @@ class ExperimentSeries2D:
         return deepcopy(self._experiments[key])
 
 
-def loop_param(name, vals, pr_init: Experiment2D, backend='cpu', mgr=None, **kwargs):
+def loop_param(names, vals, pr_init: Experiment2D, backend='cpu', mgr=None, **kwargs):
     """
-    Iterate over a specified parameter, solve numerically and collect resulting experiments.
+    Iterate over a specified parameters, solve numerically and collect resulting experiments.
+
+    Note, that if more than one parameter is provided, they are iterated in parallel rather than forming a matrix.
+
     Multiprocessing-safe.
 
-    :param name: name of the iterated parameters
-    :param vals: values to iterate
+    :param names: names of the iterated parameters
+    :param vals: values to iterate for each name
     :param pr_init: initial conditions
     :param backend: compute on 'cpu' or 'gpu'
     :param mgr: multiprocessing progress tracker
@@ -184,9 +202,14 @@ def loop_param(name, vals, pr_init: Experiment2D, backend='cpu', mgr=None, **kwa
     f = pr.get_beam(r)
     n_a = pr.analytic(r)
     exps = ExperimentSeries2D()
-    for val in vals:
-        setattr(pr, name, val)
-        if name in ['fwhm', 'f0', 'st_dev']:
+    if type(names) not in [list, tuple]:
+        names = (names,)
+        vals = (vals,)
+    exps.param = names[0]
+    for i in range(len(vals[0])):
+        for name, val in zip(names,vals):
+            setattr(pr, name, val[i])
+        if bool(set(names) & set(pr.beam_settings)):
             bonds = pr.get_bonds()
             r = np.arange(-bonds, bonds, pr.step)
             f = pr.get_beam(r)
@@ -197,5 +220,28 @@ def loop_param(name, vals, pr_init: Experiment2D, backend='cpu', mgr=None, **kwa
             l = mgr[cp_id]
             l[0] += 1
             mgr[cp_id] = l
-    exps.param = name
     return exps
+
+
+if __name__ == '__main__':
+    T = np.array([-20, -10, -5, 0, 5, 10, 20, 30, 40])+273
+    kb = 8.617e-5
+    tau = 1e-13 * np.exp(0.62/ kb / T)
+    D = 42e6 * np.exp(-0.122 / kb / T)
+    pr = Experiment2D()
+    pr.n0 = 2.8  # 1/nm^2
+    pr.F = 1700.0  # 1/nm^2/s
+    pr.s = 1
+    pr.V = 0.05  # nm^3
+    pr.tau = 1900e-6  # s
+    pr.D = 4e5  # nm^2/s
+    pr.sigma = 0.022  # nm^2
+    pr.fwhm = 200  # nm
+    pr.f0 = 5e6
+    pr.step = 0.4  # nm
+    pr.beam_type = 'gauss'
+    pr.order = 1
+    exps = loop_param(('tau', 'D'), (tau, D), pr, progress=True)
+    exps.plot('R')
+
+    a = 0

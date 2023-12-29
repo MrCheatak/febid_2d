@@ -57,7 +57,7 @@ def matrix_from_point_data(x, y, *args):
 
     xx, yy = np.meshgrid(x_unique, y_unique)
 
-    return xx, yy, *zz
+    return xx, yy, zz
 
 
 def plot_graph_from_data(fname, **kwargs):
