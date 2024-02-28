@@ -1,5 +1,4 @@
-from processclass import Experiment2D
-from timeit import default_timer as dt
+from backend.processclass import Experiment2D
 
 pr = Experiment2D()
 

@@ -1,5 +1,4 @@
 import math
-from pickle import dump
 import numpy as np
 import numexpr_mod as ne
 import pyopencl as cl
@@ -7,11 +6,10 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from scipy.interpolate import CubicSpline, PchipInterpolator, Akima1DInterpolator, make_interp_spline
 
-from pycl_test import cl_boilerplate, reaction_diffusion_jit
-from dataclass import ContinuumModel
-from analyse import get_peak, deposit_fwhm
-from beam_profile import generate_profile
-from electron_flux import EFluxEstimator
+from backend.pycl_test import cl_boilerplate, reaction_diffusion_jit
+from backend.dataclass import ContinuumModel
+from backend.analyse import get_peak, deposit_fwhm
+from backend.electron_flux import EFluxEstimator
 
 
 class Experiment2D(ContinuumModel):
@@ -19,6 +17,7 @@ class Experiment2D(ContinuumModel):
     Class representing a virtual experiment with precursor properties and beam settings.
     It allows calculation of a 2D precursor coverage and growth rate profiles based on the set conditions.
     """
+
     def __init__(self, backend='cpu'):
         super().__init__()
         self.r = None
@@ -50,7 +49,7 @@ class Experiment2D(ContinuumModel):
         """
         if r is None:
             r = self.get_grid()
-        self.f = self.f0 * generate_profile(r, self.beam_type, self.st_dev, self.order)
+        self.f = self.f0 * self.generate_beam_profile(r)
         return self.f
 
     def get_grid(self, bonds=None):
@@ -94,15 +93,15 @@ class Experiment2D(ContinuumModel):
         else:
             n = n_init
         if self.__backend == 'cpu':
-            func = self.__numeric
+            func = self._numeric
         elif self.__backend == 'gpu':
-            func = self.__numeric_gpu
+            func = self._numeric_gpu
         if self.D != 0 or self.p_o != 0:
             n = func(f, eps, n, **kwargs)
         self._interp = None
         return n
 
-    def __numeric(self, f, eps=1e-8, n_init=None, progress=False):
+    def _numeric(self, f, eps=1e-8, n_init=None, progress=False):
         n_iters = int(1e9)
         n = np.copy(n_init)
         n_check = np.copy(n_init)
@@ -134,7 +133,7 @@ class Experiment2D(ContinuumModel):
             n_check[...] = n
             n_D = self.__diffusion(n)
             ne.re_evaluate('r_e', out=n, local_dict=self._local_dict)
-            if n.max() > self.n0 or n.min() < 0:
+            if self._validation_check(n):
                 print(f'p_o: {self.p_o}, tau_r: {self.tau_r}')
                 raise ValueError('Solution unstable!')
             norm = (np.linalg.norm(n[1:] - n_check[1:]) / np.linalg.norm(n[1:]))
@@ -156,7 +155,7 @@ class Experiment2D(ContinuumModel):
         self.n = n
         return n
 
-    def __numeric_gpu(self, f_init, eps=1e-8, n_init=None, progress=False, ctx=None, queue=None):
+    def _numeric_gpu(self, f_init, eps=1e-8, n_init=None, progress=False, ctx=None, queue=None):
         # Padding array to fit a group size
         N = n_init.shape[0]
         local_size = (256,)
@@ -168,22 +167,14 @@ class Experiment2D(ContinuumModel):
         n_f = n.astype(type_dev)
         n_check_f = n_check.astype(type_dev)
 
-        base_step = 10 * int(np.log(self.D) * np.log(self.f0))
+        base_step = self._gpu_base_step()
         skip_step = base_step * 5 + 1
         skip = skip_step  # next planned accuracy check iteration
         prediction_step = skip_step * 3
         n_predictions = 0
-        norm_array = []
-        iters = []
+        norm_array = [1]
+        iters = [1]
         # Getting equation constants
-        s = self.s
-        F = self.F
-        n0 = self.n0
-        tau = self.tau
-        sigma = self.sigma
-        D = self.D
-        step = self.step
-        dt = self.dt
         # Increasing magnitude of the calculated value to increase floating point calculations
         unit = 1
         # n0, F, sigma, D, step = self.scale_parameters_units(unit)
@@ -192,8 +183,7 @@ class Experiment2D(ContinuumModel):
         # self.analytic(r, f, n0=n0, F=F, sigma=sigma, out=n)
         if ctx is None or queue is None:
             ctx, prog, queue = cl_boilerplate()
-        prog = cl.Program(ctx, reaction_diffusion_jit(s, F, n0, tau * 1e4, sigma * 1e4, D, step, dt * 1e6, n.size,
-                                                          local_size[0])).build()
+        prog = self._configure_kernel(ctx, local_size, n.size)
         n_dev = cl.Buffer(ctx, cl.mem_flags.READ_WRITE, size=n.astype(type_dev).nbytes)
         n_dev1 = cl.Buffer(ctx, cl.mem_flags.READ_WRITE, size=n.astype(type_dev).nbytes)
         f_dev = cl.Buffer(ctx, cl.mem_flags.READ_ONLY, size=f.astype(type_dev).nbytes)
@@ -202,14 +192,14 @@ class Experiment2D(ContinuumModel):
         cl.enqueue_copy(queue, n_dev1, n.astype(type_dev))
         cl.enqueue_copy(queue, f_dev, f.astype(type_dev))
 
-        n_iters = int(1e10) # maximum allowed number of iterations per solution
+        n_iters = int(1e10)  # maximum allowed number of iterations per solution
         if progress:
             t = tqdm(total=n_iters)
         else:
             t = None
         warning = 0
         i = 0
-        iter_jump = 500000
+        iter_jump = 200000
         while i < n_iters:
             step_iters = np.full((skip - i) // iter_jump + 1, iter_jump)
             step_iters[-1] = (skip - i) % iter_jump
@@ -223,22 +213,25 @@ class Experiment2D(ContinuumModel):
             event3.wait()
             event2 = prog.stencil_rde(queue, n.shape, local_size, n_dev, f_dev, np.int32(1), np.int32(N), n_dev1)
 
-            if n.max() > self.n0 or n.min() < 0:
+            if self._validation_check(n):
                 raise ValueError('Solution unstable!')
 
             event4 = cl.enqueue_copy(queue, n_f, n_dev1)
             event4.wait()
             norm = (np.linalg.norm(n_f[1:N] - n_check_f[1:N]) / np.linalg.norm(n_f[1:N]))
-            norm_array.append(norm)  # recording achieved accuracy for fitting
-            iters.append(i)
+            if norm < norm_array[-1]:
+                norm_array.append(norm)  # recording achieved accuracy for fitting
+                iters.append(i)
+            else:
+                print(f'Accuracy decrease at iteration {i}: {norm}')
+                prediction_step += skip_step
             skip += skip_step
             if eps > norm:
                 # print(f'Reached solution with an error of {norm/unit:.3e}')
                 break
             if i % prediction_step == 0:
                 a, b = self.__fit_exponential(iters, norm_array)
-                skip1 = int(
-                    (np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
+                skip1 = int((np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
                 if skip1 > n_iters:
                     raise IndexError('Reached maximum number of iterations!')
                 if skip1 < 0:
@@ -246,14 +239,25 @@ class Experiment2D(ContinuumModel):
                     skip *= 2
                     if warning > 2:
                         raise IndexError('Instability in solution, accuracy decrease trend.')
-                prediction_step = skip  # next prediction will be after another norm is calculated
+                prediction_step = skip1  # next prediction will be after another norm is calculated
                 n_predictions += 1
+                skip = skip1
                 if t:
-                    t.total = skip
+                    t.total = skip1
                     t.refresh()
         cl.enqueue_copy(queue, n_f, n_dev)
         self.n = n_f[:N] / unit ** 2
         return n
+
+    def _validation_check(self, n):
+        return n.max() > self.n0 or n.min() < 0
+
+    def _configure_kernel(self, ctx, local_size, global_size):
+        return cl.Program(ctx, reaction_diffusion_jit(self.s, self.F, self.n0, self.tau * 1e4, self.sigma * 1e4, self.D,
+                                                      self.step, self.dt * 1e6, global_size, local_size[0])).build()
+
+    def _gpu_base_step(self):
+        return 10 * int(np.log(self.D) * np.log(self.f0))
 
     def __diffusion(self, n):
         n_out = np.copy(n)
@@ -312,7 +316,7 @@ class Experiment2D(ContinuumModel):
             n = self.order
         else:
             n = 1
-        r_lim = math.fabs((math.log(self.f0 + 1, 8) / 3 + 1) * (self.st_dev * 3)/(1.7+math.log(n)))
+        r_lim = math.fabs((math.log(self.f0 + 1, 8) / 3 + 1) * (self.st_dev * 3) / (1.7 + math.log(n)))
         return r_lim
 
     @property
@@ -345,6 +349,17 @@ class Experiment2D(ContinuumModel):
         else:
             r_max = np.fabs(maxima.max())
         return r_max
+
+    @property
+    def r_max_n(self):
+        """
+        Get position of the growth speed maximum.
+        Peaks are considered symmetric if they not at 0.
+        :return:
+        """
+        r_max = self.r_max
+        r_max_n = 2 * r_max / self.fwhm
+        return r_max_n
 
     @property
     def R_max(self, interpolate=True):
@@ -476,6 +491,32 @@ class Experiment2D(ContinuumModel):
         self.f0 = es.f0_se
         return self.f0
 
+    def _local_var_defs(self):
+        """
+        Definitions of the variables.
+        :return:
+        """
+        text = ''
+        try:
+            text += super()._local_var_defs()
+        except AttributeError:
+            pass
+        text += ('\n Experiment result parameters:\n'
+                 'All growth rate values are normalized by sFV\n'
+                 'R: Growth rate profile.\n'
+                 'r: Radially symmetric grid, nm.\n'
+                 'f: Electron flux profile, 1/nm^2/s.\n'
+                 'n: Precursor coverage profile, 1/nm^2.\n'
+                 'fwhm_d: Width(FWHM) of the growth rate (deposit) profile, nm.\n'
+                 'r_max: Position of the growth rate maximum, nm.\n'
+                 'r_max_n: Position of the growth rate maximum, normalised.\n'
+                 'R_max: Maximum growth rate.\n'
+                 'R_0: Growth rate at the center of the beam.\n'
+                 'R_ind: Relative indent of the growth rate profiles with two maximums with R_max as divisor.\n'
+                 'R_ind1: Relative indent of the growth rate profiles with two maximums, with R_0 as divisor.\n'
+                 )
+        return text
+
     def __copy__(self):
         pr = Experiment2D()
         pr.n0 = self.n0
@@ -500,7 +541,7 @@ if __name__ == '__main__':
     pr.F = 1730.0  # 1/nm^2/s
     pr.s = 0.1
     pr.V = 0.05  # nm^3
-    pr.tau =  500e-6  # s
+    pr.tau = 500e-6  # s
     pr.D = 5e5  # nm^2/s
     pr.sigma = 0.022  # nm^2
     pr.fwhm = 500  # nm
@@ -512,6 +553,4 @@ if __name__ == '__main__':
     pr.plot('R')
     pr.plot('f')
     pr.plot('n')
-    print(pr.r_max/pr.fwhm)
-
-
+    print(pr.r_max / pr.fwhm)

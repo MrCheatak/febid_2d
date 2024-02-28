@@ -2,8 +2,8 @@ import os
 import numpy as np
 from pandas import read_csv
 
-from file_io import write_to_file, extract_map
-from plotting import plot_map
+from backend.file_io import write_to_file, extract_map
+from backend.plotting import plot_map
 
 
 def filter_and_sort(x, y, *args):
@@ -66,19 +66,20 @@ def plot_graph_from_data(fname, **kwargs):
 
 
 if __name__ == '__main__':
-    directory = 'sim_data\\exps4'
-    output_file = 'r_max_tau_p_o.txt'
+    directory = r'C:\Users\sandr\PycharmProjects\febid_2d\sim_data\exps4\old'
+    output_file = 'r_max_tau_p_o_1.txt'
     output_file1 = 'R_ind_tau_p_o.txt'
     column_names = ('p_o', 'tau_r', 'r_max')
     column_names1 = ('p_o', 'tau_r', 'R_ind')
     extract = ['p_o', 'tau_r', 'fwhm', 'r_max', 'R_ind']
     output_filepath = os.path.join(directory, output_file)
     output_filepath1 = os.path.join(directory, output_file1)
-    p_o1, tau_r1, fwhm, r_max1, R_ind1 = extract_map(directory, *extract)
-    r_max_n1 = r_max1 / fwhm
-    p_o, tau_r, r_max_n, R_ind = filter_and_sort(p_o1, tau_r1, r_max_n1, R_ind1)
+    p_o1, tau_r1, fwhm, r_max1, R_ind1 = extract_map(directory, *extract, ext='obj')
+    r_max_n1 = 2 * r_max1 / fwhm
+    p_o, tau_r, z = filter_and_sort(p_o1, tau_r1, r_max_n1, R_ind1)
+    r_max_n, R_ind = z
     write_to_file(output_filepath, column_names, p_o, tau_r, r_max_n, digits=5, append=True)
-    write_to_file(output_filepath1, column_names1, p_o, tau_r, R_ind, digits=5, append=True)
+    # write_to_file(output_filepath1, column_names1, p_o, tau_r, R_ind, digits=5, append=True)
     # save_map_data(directory, *column_names, output_filepath)
     # plot_graph_from_raw(directory, *column_names)
     plot_graph_from_data(output_filepath, title='Peak position map')

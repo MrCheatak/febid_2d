@@ -38,7 +38,7 @@ def extract_map(directory, *args, ext='txt'):
     :param args: names of parameters
     :return:
     """
-    files = glob.glob(directory + r'*\.' + ext)
+    files = glob.glob(directory + r'\*.' + ext)
     data = [[] for i in args]
     for file in tqdm(files):
         with open(file, mode='rb') as f:

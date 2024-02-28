@@ -3,15 +3,14 @@ Module for running series of experiments using multiprocessing.
 """
 
 from copy import copy
-import os
 import time
 import timeit
 import traceback
 
 import numpy as np
 from tqdm import tqdm
-from processclass import Experiment2D
-from experimentsclass import loop_param
+from backend.processclass import Experiment2D
+from backend.experimentsclass import loop_param
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Manager, Process
 import pyopencl as cl

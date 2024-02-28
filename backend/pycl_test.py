@@ -183,6 +183,72 @@ __kernel void stencil_rde(__global double* array, __global double* array1, int l
     return text
 
 
+def reaction_diffusion_dimensionless_jit(tau_r, p_o, f0, step, dt, global_size, local_size):
+    text = """
+#pragma OPENCL EXTENSION cl_khr_fp64 : enable
+
+__constant double tau_r = %(tau_r).12f;
+__constant double p_o = %(p_o).12f;
+__constant double f0 = %(f0).12f;
+__constant double step_x = %(step_x).12f;
+__constant double dt = %(dt).12f;
+
+__constant int global_size = %(global_size)d;
+__constant int local_size = %(local_size)d;
+
+__kernel void stencil_rde(__global double* array, __global double* array1, int loops, int size, __global double* array2)
+{
+    // Shared memory for caching array elements
+    __local double local_array[%(local_size)d+2];
+    //__local double k_local[%(local_size)d];
+    __local int i;
+    __local double po2step2dt;
+    __private double stencil_value;
+    __private double k;
+    __private double coeff;
+    __local double n;
+    __global double* readFrom = array;
+    __global double* writeTo = array2;
+    __global double* temp;
+
+    int gid = get_global_id(0);
+    int lid = get_local_id(0);
+    int group_size = get_local_size(0);
+    int local_index = lid + 1;
+
+    // Load array elements to shared memory with margin
+    k = (tau_r - 1) / f0 * array1[gid] + 1;
+    po2step2dt = p_o * p_o / step_x / step_x * dt * 1e-6;
+    coeff = k * dt * 1e-6;
+
+    barrier(CLK_GLOBAL_MEM_FENCE);
+
+    for (i = 0; i < loops; i++)
+    {   
+        if (gid > 0 && gid < size - 1)
+        {
+            stencil_value = readFrom[gid - 1] - 2 * readFrom[gid] + readFrom[gid + 1];
+        }
+
+        barrier(CLK_GLOBAL_MEM_FENCE);
+
+        // RDE calculation;
+        n = readFrom[gid];
+        writeTo[gid] = n + dt * 1e-6 - n * coeff + po2step2dt * stencil_value;
+
+        barrier(CLK_GLOBAL_MEM_FENCE);
+        temp = readFrom;
+        readFrom = writeTo;
+        writeTo = temp;
+    }
+}
+
+
+    """ % {'tau_r':tau_r, 'p_o':p_o, 'f0':f0, 'step_x': step, 'dt': dt,
+           'global_size': global_size, 'local_size': local_size}
+    return text
+
+
 def test_stencil():
     context, prog, queue = cl_boilerplate()
     data = np.arange(2, 1e3, 100)

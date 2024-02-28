@@ -1,7 +1,6 @@
 import numpy as np
-from math import sqrt, log
 from pickle import dump
-from beam_settings import BeamSettings
+from backend.beam_settings import BeamSettings
 
 
 class ContinuumModel(BeamSettings):
@@ -230,6 +229,42 @@ class ContinuumModel(BeamSettings):
         """
         with open(filename, mode='wb') as f:
             dump(self, f)
+
+    def _local_var_defs(self):
+        """
+        Definitions of the variables.
+        :return:
+        """
+        text=''
+        try:
+            text += super()._local_var_defs()
+        except AttributeError:
+            pass
+        text += ('\nPrecursor parameters:\n'
+                's: Precursor sticking coefficient, 1/nm^2.\n'
+                'F: Precursor surface flux, 1/nm^2/s.\n'
+                'n0: Maximum precursor coverage, 1/nm^2.\n'
+                'tau: Residence time of the precursor, s.\n'
+                'sigma: Dissociation cross-section of the precursor, nm^2.\n'
+                'f0: Surface electron flux density, 1/nm^2/s.\n'
+                'D: Diffusion coefficient of the precursor, nm^2/s.\n'
+                'V: Volume of a deposited fraction of the precursor molecule, nm^3.\n'
+                '\nProcess parameters:\n'
+                'kd: Depletion rate, Hz.\n'
+                'kr: Replenishment rate, Hz.\n'
+                'nd: Depleted precursor coverage, 1/nm^2.\n'
+                'nr: Replenished precursor coverage, 1/nm^2.\n'
+                'tau_in: Effective residence time in the center of the beam, s.\n'
+                'tau_out: Effective residence time outside the beam, s.\n'
+                'tau_r: Relative depletion or just Delpetion. Defined as ratio between effective residence time in the center and outside the beam.\n'
+                'p_in: Precursor molecule diffusion path in the center of the beam, nm.\n'
+                'p_out: Precursor molecule diffusion path outside the beam, nm.\n'
+                'p_i: Normalized precursor molecule diff. path in the center of the beam.\n'
+                'p_o: Diffusive replenishment. Normalized precursor molecule diff. path outside the beam.\n'
+                'phi1: Deposit size relative to beam size without surface diffusion. First scaling law. Applies only to gaussian beams.\n'
+                'phi2: Deposit size relative to beam size with surface diffusion. Second scaling law. Applies only to gaussian beams.\n'
+                'step: Grid resolution, nm.\n')
+        return text
 
 
 if __name__ == '__main__':

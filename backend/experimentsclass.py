@@ -4,8 +4,8 @@ from pickle import dump
 import numpy as np
 import matplotlib.pyplot as plt
 
-from processclass import Experiment2D
-from analyse import get_peak, deposit_fwhm
+from backend.processclass import Experiment2D
+from backend.analyse import deposit_fwhm
 
 
 class ExperimentSeries2D:

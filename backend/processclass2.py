@@ -1,7 +1,9 @@
 import numpy as np
 import numexpr_mod as ne
+import pyopencl as cl
 
-from processclass import Experiment2D
+from backend.processclass import Experiment2D
+from backend.pycl_test import reaction_diffusion_dimensionless_jit
 
 
 class Experiment2D_Dimensionless(Experiment2D):
@@ -33,6 +35,7 @@ class Experiment2D_Dimensionless(Experiment2D):
         self.sigma = np.nan
         self.D = np.nan
         self.V = np.nan
+
     @property
     def _local_dict(self):
         k = (self.tau_r - 1) / self.f0 * self.f + 1
@@ -91,11 +94,7 @@ class Experiment2D_Dimensionless(Experiment2D):
     def p_o(self, val):
         self._p_o = val
 
-    def analytic(self, r, f, tau_r=None, p_o=None, out=None):
-        if tau_r is None:
-            tau_r = self.tau_r
-        if p_o is None:
-            p_o = self.p_o
+    def analytic(self, r, f=None, out=None):
         k = (self.tau_r - 1) / self.f0 * f + 1
         n = 1 / k
         if out is not None:
@@ -104,10 +103,24 @@ class Experiment2D_Dimensionless(Experiment2D):
             self.n = n
         return n
 
-    def __numeric_gpu(self, *args, **kwargs):
-        print('GPU backend not implemented, defaulting to CPU.')
-        self.backend = 'cpu'
-        return self.__numeric(*args, **kwargs)
+    def _validation_check(self, n):
+        return n.max() > 1 or n.min() < 0
+
+    def _configure_kernel(self, ctx, local_size, global_size):
+        return cl.Program(ctx, reaction_diffusion_dimensionless_jit(self.tau_r, self.p_o, self.f0, self.step*2/self.fwhm,
+                                                                   self.dt * 1e6, global_size, local_size[0])).build()
+
+    def _gpu_base_step(self):
+        return 10 * int(self.tau_r * (1 + self.p_o))
+
+    def _local_var_defs(self):
+        text=''
+        try:
+            text += super()._local_var_defs()
+        except AttributeError:
+            pass
+        text += '\n Dimensionless RDE. \n'
+        return text
 
     def __copy__(self):
         pr = Experiment2D_Dimensionless()
@@ -123,21 +136,21 @@ class Experiment2D_Dimensionless(Experiment2D):
 
 
 if __name__ == '__main__':
-    from analyse import deposit_fwhm as df
     pr_d = Experiment2D_Dimensionless()
 
-    pr_d.tau_r = 20
-    pr_d.p_o = 0.6
+    pr_d.tau_r = 500
+    pr_d.p_o = 1
     pr_d.f0 = 9e5
-    pr_d.beam_type = 'super_gauss'
+    pr_d.beam_type = 'gauss'
     pr_d.order = 4
-    pr_d.fwhm = 1400
-    pr_d.step = pr_d.fwhm // 200
+    pr_d.fwhm = 500
+    pr_d.step = pr_d.fwhm / 200
+    pr_d.backend = 'gpu'
     pr_d.solve_steady_state(progress=True)
     pr_d.plot('R')
     print([pr_d.fwhm_d, pr_d.fwhm])
     print([pr_d.fwhm_d/pr_d.fwhm, pr_d.phi2])
     print([2*pr_d.r_max/pr_d.fwhm, pr_d.R_ind1])
-    a = 0
-
+    a = 246177
+    b = 21036671, 20418414, 20596175
 

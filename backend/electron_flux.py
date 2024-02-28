@@ -2,7 +2,7 @@ from math import sqrt, pi
 import numpy as np
 from scipy.special import gamma
 
-from beam_settings import BeamSettings
+from backend.beam_settings import BeamSettings
 
 
 class EFluxEstimator(BeamSettings):
@@ -12,15 +12,15 @@ class EFluxEstimator(BeamSettings):
     """
     e = 1.602176e-19  # elemental charge, C
 
-    def __init__(self, E0, ie, yld, fwhm, order=1, beam_type='gauss'):
+    def __init__(self):
         super().__init__()
         self.electron_flux_parameters = ['E', 'ie', 'yld']
-        self.E0 = E0  # beam energy, keV
-        self.ie = ie  # beam current, A
-        self.yld = yld  # secondary electron yield (SEs per PE)
-        self.fwhm = fwhm
-        self.beam_type = beam_type
-        self.order = order
+        self.E0 = 5  # beam energy, keV
+        self.ie = 1e-12  # beam current, A
+        self.yld = 0.5  # secondary electron yield (SEs per PE)
+        self.fwhm = 1
+        self.beam_type = 'gauss'
+        self.order = 1
 
     @property
     def pe_flux(self):

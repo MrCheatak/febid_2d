@@ -4,7 +4,8 @@ import plotly.graph_objects as go
 
 
 def plot_map(x, y, z, title=None, xlim=None, ylim=None, xlabel=r'$p_{out}$', ylabel=r'$tau_r$', logx=False, logy=False,
-             colormap='magma', vmin=None, vmax=None, contour=False, levels=None, levels_labels=True, colors='k', figsize=(12.8, 9.6), dpi=300):
+             colormap='magma', vmin=None, vmax=None, contour=False, levels=None, levels_labels=True, manual_locations=None,
+             contour_font=None, contour_format=None, colors='k', figsize=(12.8, 9.6), dpi=300):
     fix, ax = plt.subplots(figsize=figsize, dpi=dpi)
     xp = np.unique(x)
     yp = np.unique(y)
@@ -24,10 +25,10 @@ def plot_map(x, y, z, title=None, xlim=None, ylim=None, xlabel=r'$p_{out}$', yla
     img = ax.imshow(z, cmap=colormap, vmin=vmin, vmax=vmax, extent=[x.min(), xlim, y.min(), ylim], origin='lower', aspect='auto')
     if contour:
         def fmt(val):
-            return f'{val:.1f}'
+            return f'{val:.{contour_format}f}'
         cont = ax.contour(xp, yp, z, levels, colors=colors, linewidths=0.3)
         if levels_labels:
-            ax.clabel(cont, cont.levels, inline=True, fmt=fmt, fontsize=10)
+            ax.clabel(cont, cont.levels, inline=True, fmt=fmt, fontsize=contour_font, manual=manual_locations)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     if logx:

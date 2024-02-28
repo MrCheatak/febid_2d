@@ -1,6 +1,6 @@
 import numpy as np
 import pyopencl as cl
-from pycl_test import cl_boilerplate
+from backend.pycl_test import cl_boilerplate
 from timeit import default_timer as dt
 
 def stencil1(a, c):
