@@ -2,27 +2,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 
-
 def plot_map(x, y, z, title=None, xlim=None, ylim=None, xlabel=r'$p_{out}$', ylabel=r'$tau_r$', logx=False, logy=False,
              colormap='magma', vmin=None, vmax=None, contour=False, levels=None, levels_labels=True, manual_locations=None,
              contour_font=None, contour_format=None, colors='k', figsize=(12.8, 9.6), dpi=300):
     fix, ax = plt.subplots(figsize=figsize, dpi=dpi)
     xp = np.unique(x)
     yp = np.unique(y)
-    zz = z.reshape(yp.size, xp.size)
-    if xlim is not None and xlim < x.max():
-        ind = np.argmin(np.fabs(xp - xlim))
-        xp = xp[:ind]
-        z = z[:, 0:ind]
-    else:
-        xlim = x.max()
-    if ylim is not None and ylim < y.max():
-        ind = np.argmin(np.fabs(yp - ylim))
-        yp = yp[:ind]
-        z = z[0:ind, :]
-    else:
-        ylim = y.max()
-    img = ax.imshow(z, cmap=colormap, vmin=vmin, vmax=vmax, extent=[x.min(), xlim, y.min(), ylim], origin='lower', aspect='auto')
+    # zz = z.reshape(yp.size, xp.size)
+    # if not xlim:
+    #     xlim = [x.min(), x.max()]
+    # if not ylim:
+    #     ylim = [y.min(), y.max()]
+    img = ax.imshow(z, cmap=colormap, vmin=vmin, vmax=vmax, extent=[x.min(), x.max(), y.min(), y.max()], origin='lower', aspect='auto')
     if contour:
         def fmt(val):
             return f'{val:.{contour_format}f}'
@@ -31,6 +22,8 @@ def plot_map(x, y, z, title=None, xlim=None, ylim=None, xlabel=r'$p_{out}$', yla
             ax.clabel(cont, cont.levels, inline=True, fmt=fmt, fontsize=contour_font, manual=manual_locations)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
     if logx:
         ax.semilogx()
     if logy:
@@ -38,6 +31,7 @@ def plot_map(x, y, z, title=None, xlim=None, ylim=None, xlabel=r'$p_{out}$', yla
     plt.title(title)
     plt.colorbar(img, ax=ax)
     plt.show()
+    return fix, ax
 
 
 def plot_from_exps(exps, x_name, y_name, **kwargs):
@@ -127,6 +121,11 @@ def plot_map_plotly(x, y, z):
     :return:
     """
     fig = go.Figure()
-    heatmap = go.Figure(go.Heatmap(z=z, x=x, y=y))
-    heatmap.show()
-    return fig, heatmap
+    layout = {
+        'width': 800,
+        'height': 800,
+        'autosize': False,
+    }
+    heatmap = go.Figure(go.Heatmap(z=z, x=x, y=y), layout=layout)
+    # heatmap.show()
+    return heatmap
