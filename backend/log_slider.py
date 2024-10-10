@@ -4,6 +4,9 @@ from matplotlib.widgets import Slider
 
 
 class LogSlider(Slider):
+    """
+    A matplotlib slider widget with logarithmic scale.
+    """
     def __init__(self, ax, label, valmin, valmax, valinit=0.5, base=10, **kwargs):
         self.base = base
         self._val = 0

@@ -21,7 +21,7 @@ class BeamSettings:
         self.beam_settings = ['st_dev', 'fwhm', 'beam_type', 'order']
         self._st_dev = 1
         self._fwhm = 2.355 * self._st_dev
-        self.beam_type = 'gauss'
+        self._beam_type = 'gauss'
         self.order = 1
         self._load_var_definitions()
 
@@ -60,6 +60,18 @@ class BeamSettings:
     def fwhm(self, val):
         self._fwhm = val
         _ = self.st_dev
+
+    @property
+    def beam_type(self):
+        """
+        Type of the beam. Can be 'gauss' or 'super_gauss'.
+        :return:
+        """
+        return self._beam_type
+
+    @beam_type.setter
+    def beam_type(self, val):
+        self._beam_type = val
 
     def generate_beam_profile(self, x):
         """

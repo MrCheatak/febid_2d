@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 
-from backend.processclass import Experiment2D
+from backend.processclass import Experiment1D
 from backend.electron_flux import EFluxEstimator
 from backend.log_slider import LogSlider
 
@@ -17,7 +17,7 @@ es.fwhm = fwhms
 es.yld = 0.68
 ess = []
 
-pr = Experiment2D()
+pr = Experiment1D()
 
 pr.name = 'Co3Fe'
 pr.n0 = 2.8  # 1/nm^2
@@ -38,7 +38,6 @@ n = es.ie.size  # total number of points
 
 fig, ax = plt.subplots(dpi=150, figsize=(10, 6))
 plt.subplots_adjust(left=0.1, bottom=0.55, top=0.99)  # Adjust the position of the sliders
-
 
 ### Setting up sliders
 initial_param1 = 1
@@ -61,18 +60,37 @@ ax_param7 = plt.axes([0.2, 0.1, 0.65, 0.03], facecolor='lightgoldenrodyellow')
 ax_param8 = plt.axes([0.2, 0.05, 0.63, 0.03], facecolor='lightgoldenrodyellow')
 ax_param9 = plt.axes([0.2, 0.0, 0.58, 0.03], facecolor='lightgoldenrodyellow')
 
-s_param1 = Slider(ax_param1, r'Stick. coeff.', 1e-4, 1, valinit=initial_param1)
-s_param2 = Slider(ax_param2, r'Gas flux F, $nm^{-2}\cdot s^{-1}$', 1, 5000, valinit=initial_param2)
-s_param3 = Slider(ax_param3, r'Max. coverage $n_{0}$, $nm^{-2}$', 0.1, 10, valinit=initial_param3)
+s_param1 = LogSlider(ax_param1, r'Stick. coeff. (s)', 1e-5, 1, valinit=initial_param1)
+s_param2 = LogSlider(ax_param2, r'Gas flux (F), $nm^{-2}\cdot s^{-1}$', 1, 10000, valinit=initial_param2)
+s_param3 = Slider(ax_param3, r'Max. coverage ($n_{0}$), $nm^{-2}$', 0.1, 10, valinit=initial_param3)
 s_param4 = LogSlider(ax_param4, r'Res. time ($\tau_{r}$), s', 20e-6, 0.1, valinit=initial_param4)
-s_param5 = Slider(ax_param5, r'Diss. c.-sect. ($\sigma$), $nm^2$', 2.3e-4, 5e-1, valinit=initial_param5)
-s_param6 = LogSlider(ax_param6, r'Electron flux ($f_{0}$), $nm^{-2}\cdot s^{-1}$', 1e3, 1e8, valinit=initial_param6)
+s_param5 = Slider(ax_param5, r'Diss. c.-sect. ($\sigma$), $nm^2$', 1e-4, 5e-1, valinit=initial_param5)
+s_param6 = LogSlider(ax_param6, r'Electron flux ($f_{0}$), $nm^{-2}\cdot s^{-1}$', 1e2, 1e9, valinit=initial_param6)
 s_param7 = Slider(ax_param7, r'Beam FWHM, nm', 5, 1500, valinit=initial_param7)
 s_param8 = Slider(ax_param8, r'Beam flatness m', 1, 10, valinit=initial_param8)
 s_param9 = LogSlider(ax_param9, r'Diff. coeff. (D), $1/{nm^2 * s}$', 1, 1e7, valinit=initial_param9)
 
 sliders = [s_param1, s_param2, s_param3, s_param4, s_param5, s_param6, s_param7, s_param8, s_param9]
 params = ['s', 'F', 'n0', 'tau', 'sigma', 'f0', 'fwhm', 'order', 'D']
+
+r_max_display = ax.text(0.01, 0.93, '$r_{max}$: 0', fontsize=8, transform=ax.transAxes)
+R_ind_display = ax.text(0.01, 0.87, '$R_{ind}$: 0', fontsize=8, transform=ax.transAxes)
+fwhm_d_display = ax.text(0.01, 0.81, '$FWHM_D$: 0', fontsize=8, transform=ax.transAxes)
+phi_display = ax.text(0.01, 0.75, '$\phi$: 0', fontsize=8, transform=ax.transAxes)
+
+
+def r_max_text():
+    return f'$r_{{max}}$: {pr.r_max_n:.3f}'
+
+
+def R_ind_text():
+    return f'$R_{{ind}}$: {pr.R_ind:.3f}'
+
+def fwhm_d_text():
+    return f'$FWHM_D$: {pr.fwhm_d:.3f}'
+
+def phi_text():
+    return f'$\phi$: {pr.fwhm_d/pr.fwhm:.3f}'
 
 
 def events_switch(flag):
@@ -84,12 +102,16 @@ def update(val):
     for i in range(len(sliders)):
         setattr(pr, params[i], sliders[i].val)
     pr.step = pr.fwhm / 200
-    if pr.D > 1e6:
-        pr.backend = 'gpu'
-    if pr.D <= 1e6:
-        pr.backend = 'cpu'
+    # if pr.D > 1e6:
+    #     pr.backend = 'gpu'
+    # if pr.D <= 1e6:
+    #     pr.backend = 'cpu'
     pr.solve_steady_state()
     x, y = pr.r, pr.R
+    r_max_display.set_text(r_max_text())
+    R_ind_display.set_text(R_ind_text())
+    fwhm_d_display.set_text(fwhm_d_text())
+    phi_display.set_text(phi_text())
     line.set_ydata(y)
     line.set_xdata(x)
     ax.relim()
@@ -115,8 +137,8 @@ def set_ptc5(event):
     pr1.sigma = 0.022  # nm^2
     events_switch(False)
     sliders[2].set_val(pr1.n0)
-    sliders[1].set_val(pr1.F)
-    sliders[0].set_val(pr1.s)
+    sliders[1].set_val(pr1.F, True)
+    sliders[0].set_val(pr1.s, True)
     sliders[3].set_val(pr1.tau, True)
     sliders[4].set_val(pr1.sigma)
     sliders[8].set_val(pr1.D, True)
@@ -125,7 +147,6 @@ def set_ptc5(event):
 
 
 button1.on_clicked(set_ptc5)
-
 
 ### Setting up button for W(CO)6
 button2_ax = plt.axes((0.9, 0.8, 0.1, 0.05))
@@ -163,4 +184,4 @@ update(0)
 ax.set_xlabel('r')
 ax.set_ylabel('R/sFV')
 plt.show()
-a=0
+a = 0

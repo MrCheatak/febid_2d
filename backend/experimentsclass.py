@@ -4,11 +4,11 @@ from pickle import dump
 import numpy as np
 import matplotlib.pyplot as plt
 
-from backend.processclass import Experiment2D
+from backend.processclass import Experiment1D
 from backend.analyse import deposit_fwhm
 
 
-class ExperimentSeries2D:
+class ExperimentSeries1D:
     """
     Class containing a series of experiments resulting from changing a single parameter.
     """
@@ -168,7 +168,7 @@ class ExperimentSeries2D:
         return deepcopy(self._experiments[key])
 
 
-def loop_param(names, vals, pr_init: Experiment2D, backend='cpu', mgr=None, **kwargs):
+def loop_param(names, vals, pr_init: Experiment1D, backend='cpu', mgr=None, **kwargs):
     """
     Iterate over a specified parameters, solve numerically and collect resulting experiments.
 
@@ -181,7 +181,7 @@ def loop_param(names, vals, pr_init: Experiment2D, backend='cpu', mgr=None, **kw
     :param pr_init: initial conditions
     :param backend: compute on 'cpu' or 'gpu'
     :param mgr: multiprocessing progress tracker
-    :return: ExperimentSeries2D
+    :return: ExperimentSeries1D
     """
     if mgr is not None:
         cp = current_process()
@@ -201,7 +201,7 @@ def loop_param(names, vals, pr_init: Experiment2D, backend='cpu', mgr=None, **kw
     r = pr.get_grid()
     f = pr.get_beam(r)
     n_a = pr.analytic(r)
-    exps = ExperimentSeries2D()
+    exps = ExperimentSeries1D()
     if type(names) not in [list, tuple]:
         names = (names,)
         vals = (vals,)
@@ -228,7 +228,7 @@ if __name__ == '__main__':
     kb = 8.617e-5
     tau = 1e-13 * np.exp(0.62/ kb / T)
     D = 42e6 * np.exp(-0.122 / kb / T)
-    pr = Experiment2D()
+    pr = Experiment1D()
     pr.n0 = 2.8  # 1/nm^2
     pr.F = 1700.0  # 1/nm^2/s
     pr.s = 1

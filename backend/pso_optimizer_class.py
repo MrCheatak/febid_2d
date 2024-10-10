@@ -2,7 +2,7 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 
-from backend.processclass import Experiment2D
+from backend.processclass import Experiment1D
 from backend.analyse import get_peak, deposit_fwhm
 
 
@@ -20,7 +20,7 @@ class PSO_Optimizer():
     p_o_ref = 0
     fig, ax = plt.subplots()
 
-    def __init__(self, pr: Experiment2D, num_of_variables=1, num_of_params=3, n_particles=100, n_iterations=1000):
+    def __init__(self, pr: Experiment1D, num_of_variables=1, num_of_params=3, n_particles=100, n_iterations=1000):
         # Define number of optimized variables
         self.n_variables = num_of_variables
         # Define number of analyzed criteria
@@ -53,7 +53,7 @@ class PSO_Optimizer():
     def set_variables(self, *args):
         """
         Define optimized parameters. Set min, max values, max increment and name.
-        Name must correspond to one of the base parameters in the Experiment2D.
+        Name must correspond to one of the base parameters in the Experiment1D.
 
         :param args: list of tuples (min, max, dl, name)
         :return:

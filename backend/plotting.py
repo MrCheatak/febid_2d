@@ -35,6 +35,14 @@ def plot_map(x, y, z, title=None, xlim=None, ylim=None, xlabel=r'$p_{out}$', yla
 
 
 def plot_from_exps(exps, x_name, y_name, **kwargs):
+    """
+    Plot 2D data by the name from a collection of experiments.
+    :param exps: collection of experiments
+    :param x_name: variable name for x-axis
+    :param y_name: variable name for y-axis
+    :param kwargs: for additional arguments refer to plot_2d
+    :return:
+    """
     x = exps.get_attr(x_name)
     y = exps.get_attr(y_name)
     plot_2d(x, y, **kwargs)
@@ -103,7 +111,7 @@ def plot_scat_2d(x, y, z, title='Scatter plot'):
     :param title:
     :return:
     """
-    fix, ax = plt.subplots(figsize=(12.8, 9.6), dpi=300)
+    fix, ax = plt.subplots(figsize=(12.8, 9.6), dpi=70)
     line = ax.scatter(x, y, c=z, s=0.5, cmap='magma')
     ax.set_xlabel('X')
     ax.set_ylabel('Y')

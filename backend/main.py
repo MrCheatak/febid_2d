@@ -1,6 +1,6 @@
-from backend.processclass import Experiment2D
+from backend.processclass import Experiment1D
 
-pr = Experiment2D()
+pr = Experiment1D()
 
 pr.n0 = 2.7  # 1/nm^2
 pr.F = 730.0  # 1/nm^2/s

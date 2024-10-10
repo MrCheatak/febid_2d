@@ -7,7 +7,7 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 
-from backend.processclass2 import Experiment2D_Dimensionless
+from backend.processclass2 import Experiment1D_Dimensionless
 
 from backend.logger import Logger
 
@@ -98,15 +98,15 @@ class PSOVisualizerQT(QWidget):
             self.line_plots[i], = self.ax.plot(*positions[i], lw=0.5)
         self.canvas.draw()
 
-    def update(self, positions):
+    def update_viz(self, positions):
         if not self.alive:
             self.quit()
         for i in range(self.num_particles):
-            self.scatter_plots[i].set_offsets(positions[i])
             xdata, ydata = self.line_plots[i].get_data()
             xdata = np.append(xdata, positions[i, 0])
             ydata = np.append(ydata, positions[i, 1])
             self.line_plots[i].set_data(xdata, ydata)
+            self.scatter_plots[i].set_offsets(positions[i])
         self.canvas.draw()
 
     def save_animation(self, positions, filename):
@@ -142,7 +142,7 @@ def operator_func(ref_names, pr, param_names, param_vars):
     :return:
     """
     # Set new parameters
-    pr_stub = Experiment2D_Dimensionless()
+    pr_stub = Experiment1D_Dimensionless()
     for name, var in zip(param_names, param_vars):
         pr.__setattr__(name, var)
 
@@ -180,7 +180,7 @@ class PSOptimizerMP:
     """
     best_solution = 0
 
-    def __init__(self, num_of_variables=1, num_of_params=3, n_particles=100, n_iterations=1000, n_cores=None):
+    def __init__(self, num_of_variables=1, num_of_params=3, n_particles=100, n_iterations=1000, n_cores=None, progress_w=True):
         """
 
         :param num_of_variables:
@@ -189,8 +189,11 @@ class PSOptimizerMP:
         :param n_iterations:
         """
         self._w = 0.7
+        self._w_min = 0.4
+        self._w_max = 0.9
         self._c1 = 1
         self._c2 = 2 - self._c1
+        self.progressive_w = progress_w
         self._target_accuracy = 1e-8
         # Define reference parameters
         self.ref_vals = dict()
@@ -230,6 +233,7 @@ class PSOptimizerMP:
 
         self._operator_func = None
         self._operator_base_args = None
+        self.visualize = True
         self.visualizer = None
         self.optimizer_thread = PSOptimizerThread(self)
         # self.visualizer = PSOVisualizer(n_particles)
@@ -273,7 +277,7 @@ class PSOptimizerMP:
         """
         Define optimized parameters. These parameters are going to be varied to find the best match based on the
         objective function and reference. Set min, max values, max increment and name vor each optimized variable.
-        Name must correspond to one of the base parameters in the Experiment2D.
+        Name must correspond to one of the base parameters in the Experiment1D.
 
         :param args: list of tuples (min, max,max increment, name)
         :return:
@@ -331,10 +335,12 @@ class PSOptimizerMP:
         return objective_value
 
     def start_optimization(self):
-        app = QApplication(sys.argv)
-        self.visualizer = PSOVisualizerQT(self.n_particles)
+        if self.visualize:
+            self.app = QApplication(sys.argv)
+            self.visualizer = PSOVisualizerQT(self.n_particles)
         self.optimizer_thread.start()
-        app.exec_()
+        if self.visualize:
+            self.app.exec_()
         self.optimizer_thread.join()
         return self.global_best_position
 
@@ -345,7 +351,8 @@ class PSOptimizerMP:
         :param init_position:
         :return:
         """
-        executor = ProcessPoolExecutor(max_workers=self.core_workers)
+        if self.core_workers > 1:
+            executor = ProcessPoolExecutor(max_workers=self.core_workers)
         futures = []
         messages = []
         # Initialize the particle positions and velocities
@@ -354,7 +361,7 @@ class PSOptimizerMP:
         logger.info(f'Reference values: {[(name, val) for name, val in self.ref_vals.items()]}')
         logger.info(
             f'Optimized variables parameters (min, max, max_vel.): {[(name, pos, vel) for name, pos, vel in zip(self.var_names, self.position_limit, self.velocity_limit)]}')
-        logger.info(f'Meta-parameters: w={self.w}, c1={self.c1}, c2={self.c2}')
+        logger.info(f'Meta-parameters: w={self.w}, c1={self.c1}, c2={self.c2}, progressive_w={self.progressive_w}')
         logger.info('Initializing particle positions and velocities')
         for i in range(self.n_particles):
             for j in range(self.n_variables):
@@ -364,20 +371,36 @@ class PSOptimizerMP:
                     self.particle_position[i, j] = random.uniform(self.position_limit[j, 0], self.position_limit[j, 1])
                 self.particle_velocity[i, j] = random.uniform(-self.velocity_limit[j], self.velocity_limit[j])
                 self.local_best_position[i, :] = self.particle_position[i, :]
-            self.visualizer.initialize(self.particle_position, self.position_limit[0, 1], self.position_limit[1, 1])
-            f = executor.submit(self._operator_func, *self._operator_base_args, self.var_names,
-                                self.particle_position[i, :])
+            if self.visualize:
+                self.visualizer.initialize(self.particle_position, self.position_limit[0, 1], self.position_limit[1, 1])
+            if self.core_workers > 1:
+                f = executor.submit(self._operator_func, *self._operator_base_args, self.var_names,
+                                    self.particle_position[i, :])
+            else:
+                f = self._operator_func(*self._operator_base_args, self.var_names, self.particle_position[i, :])
             futures.append(f)
         self.positions[0, :] = self.particle_position[:]
-        for i, f in enumerate(as_completed(futures)):
-            result = f.result()
-            self.local_best_value[i] = self.objective_function(result)
-            # TODO: best solution is not equal to the particle position
-            if self.local_best_value[i] < self.global_best_value:
-                self.global_best_value = self.local_best_value[i]
-                self.global_best_position[...] = self.particle_position[i, :]
-                self.best_solution = deepcopy(result)
+        if self.core_workers > 1:
+            for i, f in enumerate(as_completed(futures)):
+                result = f.result()
+                self.local_best_value[i] = self.objective_function(result)
+                # TODO: best solution is not equal to the particle position
+                if self.local_best_value[i] < self.global_best_value:
+                    self.global_best_value = self.local_best_value[i]
+                    self.global_best_position[...] = self.particle_position[i, :]
+                    self.best_solution = deepcopy(result)
+        else:
+            for i, f in enumerate(futures):
+                result = f
+                self.local_best_value[i] = self.objective_function(result)
+                # TODO: best solution is not equal to the particle position
+                if self.local_best_value[i] < self.global_best_value:
+                    self.global_best_value = self.local_best_value[i]
+                    self.global_best_position[...] = self.particle_position[i, :]
+                    self.best_solution = deepcopy(result)
         # Define the particle swarm optimization parameters
+        if self.progressive_w:
+            rnd = 0.1
         w = self._w
         c1 = self._c1
         c2 = self._c2
@@ -390,6 +413,9 @@ class PSOptimizerMP:
             logger.info(f'Iteration {t}')
             futures.clear()
             messages.clear()
+            if self.progressive_w:
+                rnd = 4 * rnd * (1 - rnd)
+                w = self._w_min * rnd + (self._w_max - self._w_min) * t / self.n_iterations
             for i in range(self.n_particles):
                 # Update the particle velocity
                 r1 = random.uniform(0, 1)
@@ -412,12 +438,19 @@ class PSOptimizerMP:
                 # Run simulation and check if the particle has reached a new local best position
                 message = f'Trying new set {[(name, val) for name, val in zip(self.var_names, self.particle_position[i, :])]},'
                 messages.append(message)
-                future = executor.submit(self._operator_func, *self._operator_base_args, self.var_names,
-                                         self.particle_position[i, :])
+                if self.core_workers > 1:
+                    future = executor.submit(self._operator_func, *self._operator_base_args, self.var_names,
+                                        self.particle_position[i, :])
+                else:
+                    future = self._operator_func(*self._operator_base_args, self.var_names, self.particle_position[i, :])
                 futures.append(future)
-            wait(futures)
+            if self.core_workers > 1:
+                wait(futures)
             for i, f in enumerate(futures):
-                result = f.result()
+                if self.core_workers > 1:
+                    result = f.result()
+                else:
+                    result = f
                 current_value = self.objective_function(result)
                 text = f'{messages[i]},  {[(name, result[name]) for name in self.ref_vals.keys()]}. Fit score: {current_value}'
                 rating = (current_value - self.global_best_value) / self.local_best_value.max()
@@ -432,9 +465,10 @@ class PSOptimizerMP:
                     self.best_solution = deepcopy(result)
                     logger.info("New best value: Best fit = {}, Best parameters: {}".format(t, self.global_best_value,
                                                                                             self.global_best_position))
-            self.visualizer.positions = self.particle_position
-            self.visualizer.update_flag = True
-            self.visualizer.update(self.particle_position)
+            if self.visualize:
+                self.visualizer.positions = self.particle_position
+                self.visualizer.update_flag = True
+                self.visualizer.update_viz(self.particle_position)
             if self.global_best_value < self.target_accuracy:
                 logger.info('Target accuracy reached.')
                 break
@@ -444,12 +478,14 @@ class PSOptimizerMP:
         # Print the final global best position and value
         logger.info("Final global best position = {}".format(self.global_best_position))
         logger.info("Final global best value = {}".format(self.global_best_value))
+        if self.visualize:
+            self.app.quit()
         return self.global_best_position
 
 
 if __name__ == '__main__':
 
-    pr_d = Experiment2D_Dimensionless()
+    pr_d = Experiment1D_Dimensionless()
     pr_d.step = 5
     pr_d.tau_r = 100
     pr_d.p_o = 2
@@ -486,3 +522,4 @@ if __name__ == '__main__':
             fit_score = pso.global_best_value
             with open(fname, 'a') as f:
                 f.write(f'{z}\t{x}\t{y}\t{result[0]}\t{result[1]}\t{fit_score}\n')
+    pass

@@ -12,7 +12,7 @@ from backend.analyse import get_peak, deposit_fwhm
 from backend.electron_flux import EFluxEstimator
 
 
-class Experiment2D(ContinuumModel):
+class Experiment1D(ContinuumModel):
     """
     Class representing a virtual experiment with precursor properties and beam settings.
     It allows calculation of a 2D precursor coverage and growth rate profiles based on the set conditions.
@@ -450,12 +450,20 @@ class Experiment2D(ContinuumModel):
     def plot(self, var, dpi=150):
         if var not in ['R', 'n', 'f']:
             raise ValueError(f'{var} is not spatially resolved. Use R, n or f')
+        if var == 'R':
+            y_label = 'R/sFV'
+        elif var == 'n':
+            y_label = 'n, 1/nm^2'
+        elif var == 'f':
+            y_label = 'f, 1/nm^2/s'
         fig, ax = plt.subplots(dpi=dpi)
         x = self.r
         y = self.__getattribute__(var)
         if y is None:
             raise ValueError(f'The attribute \'{var}\' is not set.')
         line, = ax.plot(x, y)
+        ax.set_xlabel('r, nm')
+        ax.set_ylabel(y_label)
         plt.show()
 
     def interpolate(self, var):
@@ -518,7 +526,7 @@ class Experiment2D(ContinuumModel):
         return text
 
     def __copy__(self):
-        pr = Experiment2D()
+        pr = Experiment1D()
         pr.n0 = self.n0
         pr.s = self.s
         pr.F = self.F
@@ -536,7 +544,7 @@ class Experiment2D(ContinuumModel):
 
 
 if __name__ == '__main__':
-    pr = Experiment2D()
+    pr = Experiment1D()
     pr.n0 = 2.8  # 1/nm^2
     pr.F = 1730.0  # 1/nm^2/s
     pr.s = 0.1

@@ -4,8 +4,8 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 
-from backend.processclass import Experiment2D
-from backend.processclass2 import Experiment2D_Dimensionless
+from backend.processclass import Experiment1D
+from backend.processclass2 import Experiment1D_Dimensionless
 from backend.analyse import get_peak, deposit_fwhm
 
 from multiprocessing import cpu_count
@@ -74,7 +74,7 @@ class PSO_OptimizerMP():
     fwhm_ref = 0
     best_solution = 0
 
-    def __init__(self, pr: Experiment2D, num_of_variables=1, num_of_params=3, n_particles=100, n_iterations=1000):
+    def __init__(self, pr: Experiment1D, num_of_variables=1, num_of_params=3, n_particles=100, n_iterations=1000):
         # Define number of optimized variables
         self.var_name = []
         self.n_variables = num_of_variables
@@ -112,7 +112,7 @@ class PSO_OptimizerMP():
     def set_variables(self, *args):
         """
         Define optimized parameters. Set min, max values, max increment and name.
-        Name must correspond to one of the base parameters in the Experiment2D.
+        Name must correspond to one of the base parameters in the Experiment1D.
 
         :param args: list of tuples (min, max, dl, name)
         :return:
@@ -142,7 +142,7 @@ class PSO_OptimizerMP():
         self.fwhm_ref = fwhm
         self.R_max_ref = R_max
 
-    def objective_function(self, pr:Experiment2D):
+    def objective_function(self, pr:Experiment1D):
         """
         Objective function that calculates the difference between the result with current parameters
         and the reference.
@@ -292,7 +292,7 @@ class PSO_OptimizerMP():
 
 
 if __name__ == '__main__':
-    pr_d = Experiment2D()
+    pr_d = Experiment1D()
     pr_d.step = 1
     pr_d.tau = 20
     pr_d.D = 1e5

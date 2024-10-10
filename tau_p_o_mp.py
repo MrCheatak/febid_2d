@@ -9,7 +9,7 @@ import traceback
 
 import numpy as np
 from tqdm import tqdm
-from backend.processclass import Experiment2D
+from backend.processclass import Experiment1D
 from backend.experimentsclass import loop_param
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Manager, Process
@@ -184,7 +184,7 @@ def map_2d(pr_init, names, vals, fname='exps', n_threads=1, init_i=0, backend='c
 if __name__ == '__main__':
     pass
     fname = r'sim_data\test'
-    pr = Experiment2D()
+    pr = Experiment1D()
     # Initializing model
     pr.n0 = 2.7  # 1/nm^2
     pr.F = 730.0  # 1/nm^2/s

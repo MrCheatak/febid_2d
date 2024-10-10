@@ -15,12 +15,48 @@ class EFluxEstimator(BeamSettings):
     def __init__(self):
         super().__init__()
         self.electron_flux_parameters = ['E', 'ie', 'yld']
-        self.E0 = 5  # beam energy, keV
-        self.ie = 1e-12  # beam current, A
-        self.yld = 0.5  # secondary electron yield (SEs per PE)
+        self._E0 = 5  # beam energy, keV
+        self._ie = 1e-12  # beam current, A
+        self._yld = 0.5  # secondary electron yield (SEs per PE)
         self.fwhm = 1
         self.beam_type = 'gauss'
         self.order = 1
+
+    @property
+    def E0(self):
+        """
+        Beam energy in keV.
+        :return:
+        """
+        return self._E0
+
+    @E0.setter
+    def E0(self, value):
+        self._E0 = value
+
+    @property
+    def ie(self):
+        """
+        Beam current in A.
+        :return:
+        """
+        return self._ie
+
+    @ie.setter
+    def ie(self, value):
+        self._ie = value
+
+    @property
+    def yld(self):
+        """
+        Secondary electron yield coefficient.
+        :return:
+        """
+        return self._yld
+
+    @yld.setter
+    def yld(self, value):
+        self._yld = value
 
     @property
     def pe_flux(self):

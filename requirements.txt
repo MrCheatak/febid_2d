@@ -1,5 +1,5 @@
 numpy==1.26.0
-scipy==1.11.3
+scipy==1.13.0
 numexpr_mod
 pyopencl==2023.1.2
 tqdm==4.66.1

@@ -3,9 +3,11 @@ Several methods for basic curve analysis
 """
 
 from scipy.signal import argrelextrema as argextr
-from scipy.optimize import minimize_scalar
+from scipy.optimize import minimize_scalar, basinhopping
 from scipy.interpolate import CubicSpline
 import numpy as np
+
+y_global_min = -1
 
 
 def convergence_analysis(y1, y2):
@@ -43,16 +45,43 @@ def get_peak(x, y, sp=None):
         return -sp(f)
 
     n = x.size // 2  # center
+    y_max_prelim = y[n]
+    if abs(y_max_prelim - y.max()) < 1e-5:
+        return 0, y[n]
     ind = (y[n:] > 1e-8).nonzero()[0][-1]  # for reduction of the optimization window
     x_max = x[n + ind]
-    res = minimize_scalar(obj_func, bounds=(0, x_max), method='bounded')
+    init_guess = y.max()
+    y_max_ind = np.argmax(y)
+    x_max_init = x[y_max_ind]
+    n_iters = 1000
+    step_size = x.max() / 200
+    # res = minimize_scalar(obj_func, bounds=(0, x_max), method='bounded')
+    res = basinhopping(obj_func, x_max_init,
+                       minimizer_kwargs={'method': 'L-BFGS-B', 'bounds': [(0, x_max)]}, T=5,
+                       niter=n_iters, stepsize=step_size,
+                       # disp=True,
+                       # callback=evaluate_minima
+                       )
     # maxima = argextr(y, np.greater)
     # y_max = y[maxima]
     # x_max = x[maxima]
-    x_max = res.x
-    y_max = -res.fun
+    x_max = np.array(res.x)
+    y_max = np.array(-res.fun)
 
     return x_max, y_max
+
+
+def evaluate_minima(x, f, accepted):
+    """
+    Evaluate minima during basinhopping optimization
+    :param x: x-coordinates
+    :param f: y-coordinates
+    :param accepted: bool
+    :return: None
+    """
+
+    if f < 1e-12:
+        return True
 
 
 def deposit_fwhm_legacy1(x, y):

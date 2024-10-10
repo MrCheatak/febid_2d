@@ -2,11 +2,11 @@ import numpy as np
 import numexpr_mod as ne
 import pyopencl as cl
 
-from backend.processclass import Experiment2D
+from backend.processclass import Experiment1D
 from backend.pycl_test import reaction_diffusion_dimensionless_jit
 
 
-class Experiment2D_Dimensionless(Experiment2D):
+class Experiment1D_Dimensionless(Experiment1D):
     """
     Class representing a virtual experiment with beam settings and dimensionless parameters.
     It allows calculation of a 2D precursor coverage and growth rate profiles based on the set conditions.
@@ -123,7 +123,7 @@ class Experiment2D_Dimensionless(Experiment2D):
         return text
 
     def __copy__(self):
-        pr = Experiment2D_Dimensionless()
+        pr = Experiment1D_Dimensionless()
         pr.f0 = self.f0
         pr.fwhm = self.fwhm
         pr.beam_type = self.beam_type
@@ -136,17 +136,18 @@ class Experiment2D_Dimensionless(Experiment2D):
 
 
 if __name__ == '__main__':
-    pr_d = Experiment2D_Dimensionless()
+    pr_d = Experiment1D_Dimensionless()
 
-    pr_d.tau_r = 500
-    pr_d.p_o = 1
+    pr_d.tau_r = 100
+    pr_d.p_o = 0.15
     pr_d.f0 = 9e5
-    pr_d.beam_type = 'gauss'
-    pr_d.order = 4
+    pr_d.beam_type = 'super_gauss'
+    pr_d.order = 2
     pr_d.fwhm = 500
     pr_d.step = pr_d.fwhm / 200
     pr_d.backend = 'gpu'
     pr_d.solve_steady_state(progress=True)
+    print(pr_d.r_max_n)
     pr_d.plot('R')
     print([pr_d.fwhm_d, pr_d.fwhm])
     print([pr_d.fwhm_d/pr_d.fwhm, pr_d.phi2])
