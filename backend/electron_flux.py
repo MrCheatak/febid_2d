@@ -14,7 +14,7 @@ class EFluxEstimator(BeamSettings):
 
     def __init__(self):
         super().__init__()
-        self.electron_flux_parameters = ['E', 'ie', 'yld']
+        self.electron_flux_parameters = ['E0', 'ie', 'yld']
         self._E0 = 5  # beam energy, keV
         self._ie = 1e-12  # beam current, A
         self._yld = 0.5  # secondary electron yield (SEs per PE)
@@ -100,5 +100,14 @@ class EFluxEstimator(BeamSettings):
 
 
 if __name__ == '__main__':
-    var = EFluxEstimator(5, 120e-12, 0.67, 100, 2, 'super_gauss')
+    var = EFluxEstimator()
+    var.E0 = 5
+    var.ie = 1e-12
+    var.yld = 0.68
+    var.fwhm = 300
+    var.beam_type = 'gauss'
+    var.order = 1
     var.print_electron_flux_parameters()
+    print(f'Primary electron flux: {var.pe_flux}')
+    print(f'Pre-exponential factor for primary electron beam: {var.f0_pe}')
+    print(f'Pre-exponential factor for secondary electron emission profile: {var.f0_se}')

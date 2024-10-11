@@ -5,6 +5,32 @@ import plotly.graph_objects as go
 def plot_map(x, y, z, title=None, xlim=None, ylim=None, xlabel=r'$p_{out}$', ylabel=r'$tau_r$', logx=False, logy=False,
              colormap='magma', vmin=None, vmax=None, contour=False, levels=None, levels_labels=True, manual_locations=None,
              contour_font=None, contour_format=None, colors='k', figsize=(12.8, 9.6), dpi=300):
+    """
+    Create a color-mapped surface projection. Each coordinate must be a matrix.
+
+    :param x: 2d array of size m*n, ticks at X-axis
+    :param y: 2d array of size m*n, ticks on Y-axis
+    :param z: 2d array of size m*n, data to be plotted
+    :param title: title of the plot
+    :param xlim: limits of the x-axis
+    :param ylim: limits of the y-axis
+    :param xlabel: label of the x-axis
+    :param ylabel: label of the y-axis
+    :param logx: apply log scale to x-axis
+    :param logy: apply log scale to y-axis
+    :param colormap: colormap name to be used
+    :param vmin: minimum value of the colormap
+    :param vmax: maximum value of the colormap
+    :param contour: plot contour lines
+    :param levels: number of contour lines
+    :param levels_labels: show labels on contour lines
+    :param manual_locations: manual locations of contour labels
+    :param contour_font: font size of contour labels
+    :param contour_format: format of contour labels
+    :param colors: color of contour lines
+    :param figsize: figure size
+    :param dpi: dots per inch of the figure
+    """
     fix, ax = plt.subplots(figsize=figsize, dpi=dpi)
     xp = np.unique(x)
     yp = np.unique(y)
@@ -13,7 +39,7 @@ def plot_map(x, y, z, title=None, xlim=None, ylim=None, xlabel=r'$p_{out}$', yla
     #     xlim = [x.min(), x.max()]
     # if not ylim:
     #     ylim = [y.min(), y.max()]
-    img = ax.imshow(z, cmap=colormap, vmin=vmin, vmax=vmax, extent=[x.min(), x.max(), y.min(), y.max()], origin='lower', aspect='auto')
+    img = ax.imshow(z, cmap=colormap, vmin=vmin, vmax=vmax, extent=(x.min(), x.max(), y.min(), y.max()), origin='lower', aspect='auto')
     if contour:
         def fmt(val):
             return f'{val:.{contour_format}f}'
@@ -75,7 +101,7 @@ def plot_img(x, y, z, title='Surface map'):
     """
     # The extent parameter is set to the range of coordinates in the X and Y matrices.
     # The aspect='auto' parameter ensures that the aspect ratio of the plot is adjusted appropriately.
-    plt.imshow(z, cmap='magma', extent=[x.min(), x.max(), y.min(), y.max()], origin='lower', aspect='auto')
+    plt.imshow(z, cmap='magma', extent=(x.min(), x.max(), y.min(), y.max()), origin='lower', aspect='auto')
     plt.title(title)
     plt.xlabel('X')
     plt.ylabel('Y')

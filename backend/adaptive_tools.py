@@ -26,6 +26,8 @@ def learner_load_full(fname, compress=True, type='2D'):
     learner = adaptive.Learner2D(min, ((0, 1), (0, 1)))
     learner.load(fname, compress=compress)
     data = learner_data_to_numpy(learner)
+    if data.size == 0:
+        raise ValueError('Learner file not found or empty.')
     bounds = bounds_2d_from_data(data)
     # Then we create a new learner with the correct bounds
     learner = adaptive.Learner2D(min, bounds)
@@ -213,14 +215,28 @@ def learner_data_to_numpy(learner):
     arr = np.asarray(arr_list)
     return arr
 
+def numpy_to_learner_data(arr):
+    """
+    Convert learner's data to a numpy array.
+    :param learner: Learner2D or LearnerND
+    :return: 2D numpy array
+    """
+    data = {}
+    for item in arr:
+        key = tuple(item[:-1])
+        value = item[-1]
+        data[key] = value
+    return data
+
 
 if __name__ == '__main__':
     pass
     # Example of using the functions
-    fname = r'/home/alex/PycharmProjects/febid_2d/data/maps/R_ind_interp_2.0.int'
-    fname1 = r'/home/alex/PycharmProjects/febid_2d/data/maps/R_ind_interp_3.0.int'
+    fname = r'../examples/r_max_interp_1.0.int'
+    fname1 = r'../examples/R_ind_interp_1.0.int'
     learner = learner_load_full(fname)
     arr = learner_data_to_numpy(learner)
+    data = numpy_to_learner_data(arr)
     # plot_learner(learner)
     learner_rebound(learner, ((0, 2), (1, 1000)))
     fname_save = fname.replace('.int', '.txt')

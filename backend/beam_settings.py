@@ -99,7 +99,7 @@ class BeamSettings:
         print(text)
 
     @staticmethod
-    def __custom_format(self, number):
+    def __custom_format(number):
         if type(number) is not type(None) or str:
             if number > 1000:
                 return "{:.3e}".format(number)
