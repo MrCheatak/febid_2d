@@ -1,6 +1,32 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
+from holoviews import opts
+
+def plot(learner, npoints=300, tri_alpha=0.2, width=300, height=300, xlim=None, ylim=None, mouse_coords=False):
+    """
+    Plot a Learner colormap with triangulation net using HoloViews.
+    :param learner: Learner2D object
+    :param npoints: nunber of points along x and y.
+    :param tri_alpha: opacity of the triangulation net.
+    :param width: width of the plot in px.
+    :param height: height of the plot in px.
+    :param xlim: x-axis limits.
+    :param ylim: y-axis limits.
+    :param mouse_coords: show mouse coordinates under the mouse
+    :return: Holoviews plot object.
+    """
+    plot = learner.plot(npoints, tri_alpha=tri_alpha)
+    if xlim is not None:
+        plot.opts(xlim=xlim)
+    if ylim is not None:
+        plot.opts(ylim=ylim)
+    plot.opts(width=width, height=height)
+    if mouse_coords:
+        plot.opts(
+                opts.Image(tools=['hover']),
+                )
+    return plot
 
 def plot_map(x, y, z, title=None, xlim=None, ylim=None, xlabel=r'$p_{out}$', ylabel=r'$tau_r$', logx=False, logy=False,
              colormap='magma', vmin=None, vmax=None, contour=False, levels=None, levels_labels=True, manual_locations=None,

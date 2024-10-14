@@ -8,6 +8,7 @@ from scipy.interpolate import CubicSpline
 import numpy as np
 
 y_global_min = -1
+n_iters = 1600  # 1600 iterations are is the minimum for reproducible results
 
 
 def convergence_analysis(y1, y2):
@@ -53,18 +54,14 @@ def get_peak(x, y, sp=None):
     init_guess = y.max()
     y_max_ind = np.argmax(y)
     x_max_init = x[y_max_ind]
-    n_iters = 1000
-    step_size = x.max() / 200
-    # res = minimize_scalar(obj_func, bounds=(0, x_max), method='bounded')
+    step_size = x.max() / 20
+    T = n // 2
     res = basinhopping(obj_func, x_max_init,
-                       minimizer_kwargs={'method': 'L-BFGS-B', 'bounds': [(0, x_max)]}, T=5,
+                       minimizer_kwargs={'method': 'L-BFGS-B', 'bounds': [(0, x_max)]}, T=T,
                        niter=n_iters, stepsize=step_size,
                        # disp=True,
                        # callback=evaluate_minima
                        )
-    # maxima = argextr(y, np.greater)
-    # y_max = y[maxima]
-    # x_max = x[maxima]
     x_max = np.array(res.x)
     y_max = np.array(-res.fun)
 
