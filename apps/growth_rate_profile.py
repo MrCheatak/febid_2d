@@ -77,6 +77,8 @@ r_max_display = ax.text(0.01, 0.93, '$r_{max}$: 0', fontsize=8, transform=ax.tra
 R_ind_display = ax.text(0.01, 0.87, '$R_{ind}$: 0', fontsize=8, transform=ax.transAxes)
 fwhm_d_display = ax.text(0.01, 0.81, '$FWHM_D$: 0', fontsize=8, transform=ax.transAxes)
 phi_display = ax.text(0.01, 0.75, '$\phi$: 0', fontsize=8, transform=ax.transAxes)
+tau_r_display = ax.text(0.01, 0.67, '$\\tilde{\\tau}$: 0', fontsize=8, transform=ax.transAxes)
+p_o_display = ax.text(0.01, 0.60, '$\\tilde{p}_{out}$: 0', fontsize=8, transform=ax.transAxes)
 
 
 def r_max_text():
@@ -87,10 +89,16 @@ def R_ind_text():
     return f'$R_{{ind}}$: {pr.R_ind:.3f}'
 
 def fwhm_d_text():
-    return f'$FWHM_D$: {pr.fwhm_d:.3f}'
+    return f'$FWHM_D$: {pr.fwhm_d:.1f} nm'
 
 def phi_text():
     return f'$\phi$: {pr.fwhm_d/pr.fwhm:.3f}'
+
+def tau_r_text():
+    return f'$\\tilde{{\\tau}}$: {pr.tau_r:.1f}'
+
+def p_o_text():
+    return f'$\\tilde{{p}}_{{out}}$: {pr.p_o:.2f}'
 
 
 def events_switch(flag):
@@ -112,6 +120,8 @@ def update(val):
     R_ind_display.set_text(R_ind_text())
     fwhm_d_display.set_text(fwhm_d_text())
     phi_display.set_text(phi_text())
+    tau_r_display.set_text(tau_r_text())
+    p_o_display.set_text(p_o_text())
     line.set_ydata(y)
     line.set_xdata(x)
     ax.relim()

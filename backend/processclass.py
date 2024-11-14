@@ -10,6 +10,7 @@ from backend.pycl_test import cl_boilerplate, reaction_diffusion_jit
 from backend.dataclass import ContinuumModel
 from backend.analyse import get_peak, deposit_fwhm
 from backend.electron_flux import EFluxEstimator
+from backend.diffusion import laplace_1d
 
 
 class Experiment1D(ContinuumModel):
@@ -102,6 +103,8 @@ class Experiment1D(ContinuumModel):
         return n
 
     def _numeric(self, f, eps=1e-8, n_init=None, progress=False):
+        def local_dict(n, f, n_D):
+            return self._local_dict | dict(n=n, f=f, n_D=n_D)
         n_iters = int(1e9)
         n = np.copy(n_init)
         n_check = np.copy(n_init)
@@ -113,7 +116,6 @@ class Experiment1D(ContinuumModel):
         norm = 1  # achieved accuracy
         norm_array = []
         iters = []
-        local_dict = self._local_dict
         if progress:
             t = tqdm(total=n_iters)
         else:
@@ -126,13 +128,13 @@ class Experiment1D(ContinuumModel):
             for step in step_iters:
                 for j in range(step):
                     n_D = self.__diffusion(n)
-                    ne.re_evaluate(self._numexpr_name, out=n, local_dict=local_dict)
+                    ne.re_evaluate(self._numexpr_name, out=n, local_dict=local_dict(n, f, n_D))
                 if t:
                     t.update(step)
                 i = skip
             n_check[...] = n
             n_D = self.__diffusion(n)
-            ne.re_evaluate('r_e', out=n, local_dict=self._local_dict)
+            ne.re_evaluate('r_e', out=n, local_dict=local_dict(n, f, n_D))
             if self._validation_check(n):
                 print(f'p_o: {self.p_o}, tau_r: {self.tau_r}')
                 raise ValueError('Solution unstable!')
@@ -147,6 +149,8 @@ class Experiment1D(ContinuumModel):
                 a, b = self.__fit_exponential(iters, norm_array)
                 skip = int(
                     (np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
+                if skip < 0:
+                    raise ValueError('Instability in solution, solution convergance deviates from exponential behavior.')
                 prediction_step = skip  # next prediction will be after another norm is calculated
                 n_predictions += 1
                 if t:
@@ -260,13 +264,7 @@ class Experiment1D(ContinuumModel):
         return 10 * int(np.log(self.D) * np.log(self.f0))
 
     def __diffusion(self, n):
-        n_out = np.copy(n)
-        n_out[0] = 0
-        n_out[-1] = 0
-        n_out[1:-1] *= -2
-        n_out[1:-1] += n[2:]
-        n_out[1:-1] += n[:-2]
-        return n_out
+        return laplace_1d(n)
 
     def analytic(self, r, f=None, out=None):
         """
