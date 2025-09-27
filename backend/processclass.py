@@ -102,7 +102,42 @@ class Experiment1D(ContinuumModel):
         self._interp = None
         return n
 
-    def _numeric(self, f, eps=1e-8, n_init=None, progress=False):
+    def solve_for_time(self, t, r=None, f=None, n_init=None, **kwargs):
+        """
+        Derive a precursor coverage for a given time.
+
+        r, f and n_init must have the same length.
+        If these parameters are not provided, they are generated automatically.
+
+        If n_init is not provided, an analytical solution is used.
+
+        :param t: time, s
+        :param r: radially symmetric grid
+        :param f: electron flux
+        :param n_init: initial precursor coverage
+        :return: precursor coverage profile
+        """
+        if r is None:
+            r = self.get_grid()
+        self.r = r
+        if f is None:
+            f = self.get_beam(r)
+        self.f = f
+        if n_init is None:
+            n_init = np.zeros_like(r)
+        elif n_init == "full":
+            n_init = np.full_like(r, self.nr)
+        self.n = n_init
+        if self.__backend == 'cpu':
+            func = self._numeric
+        elif self.__backend == 'gpu':
+            func = self._numeric_gpu
+        if self.D != 0 or self.p_o != 0:
+            n = func(f, t_solve=t, n_init=n_init, **kwargs)
+        self._interp = None
+        return n
+
+    def _numeric(self, f, eps=1e-8, n_init=None, t_solve=0, progress=False):
         def local_dict(n, f, n_D):
             return self._local_dict | dict(n=n, f=f, n_D=n_D)
         n_iters = int(1e9)
@@ -116,29 +151,38 @@ class Experiment1D(ContinuumModel):
         norm = 1  # achieved accuracy
         norm_array = []
         iters = []
+        time_elapsed = 0  # Initialize time counter
+        flag_run = True
         if progress:
             t = tqdm(total=n_iters)
         else:
             t = None
         i = 0
         iter_jump = 1000
-        while i < n_iters:
+        while i < n_iters and flag_run:
             step_iters = np.full((skip - i) // iter_jump + 1, iter_jump)
             step_iters[-1] = (skip - i) % iter_jump
             for step in step_iters:
                 for j in range(step):
                     n_D = self.__diffusion(n)
                     ne.re_evaluate(self._numexpr_name, out=n, local_dict=local_dict(n, f, n_D))
+                    time_elapsed += self.dt  # Increment time counter
+                    if t_solve:
+                        if time_elapsed >= t_solve:
+                            flag_run = False
+                            break
                 if t:
                     t.update(step)
                 i = skip
+                if not flag_run:
+                    break
             n_check[...] = n
             n_D = self.__diffusion(n)
             ne.re_evaluate('r_e', out=n, local_dict=local_dict(n, f, n_D))
             if self._validation_check(n):
                 print(f'p_o: {self.p_o}, tau_r: {self.tau_r}')
                 raise ValueError('Solution unstable!')
-            norm = (np.linalg.norm(n[1:] - n_check[1:]) / np.linalg.norm(n[1:]))
+            norm = (np.linalg.norm(n[1:] - n_check[1:]) / np.linalg.norm(n[1:])) # checking change in solution vector
             norm_array.append(norm)  # recording achieved accuracy for fitting
             iters.append(i)
             skip += skip_step
@@ -157,6 +201,7 @@ class Experiment1D(ContinuumModel):
                     t.total = skip
                     t.refresh()
         self.n = n
+        print(f'Total time elapsed: {time_elapsed} s')  # Print total time elapsed
         return n
 
     def _numeric_gpu(self, f_init, eps=1e-8, n_init=None, progress=False, ctx=None, queue=None):
