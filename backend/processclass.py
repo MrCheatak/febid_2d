@@ -10,7 +10,7 @@ from backend.pycl_test import cl_boilerplate, reaction_diffusion_jit
 from backend.dataclass import ContinuumModel
 from backend.analyse import get_peak, deposit_fwhm
 from backend.electron_flux import EFluxEstimator
-from backend.diffusion import laplace_1d
+from backend.diffusion import laplace_1d, laplacian_radial_1d
 
 
 class Experiment1D(ContinuumModel):
@@ -19,9 +19,10 @@ class Experiment1D(ContinuumModel):
     It allows calculation of a 2D precursor coverage and growth rate profiles based on the set conditions.
     """
 
-    def __init__(self, backend='cpu'):
+    def __init__(self, backend='cpu', coords='radial'):
         super().__init__()
-        self.r = None
+        self._r = None
+        self.r = np.array([])
         self.f = None
         self.n = None
         self._R = None
@@ -29,12 +30,14 @@ class Experiment1D(ContinuumModel):
         self.backend = backend
         self.interpolation_method = 'cubic'
         self._numexpr_name = 'r_e'
+        self.coords = coords  # 'radial' or 'cartesian'
+        self.equation = 'conventional'  # 'conventional' or 'dimensionless'
         n = 0.0
         n_D = 0.0
         f = 0.0
         local_dict = dict(s=self.s, F=self.F, n0=self.n0, tau=self.tau,
                           sigma=self.sigma, D=self.D, dt=self.dt, step=self.step)
-        ne.cache_expression("(s*F*(1-n/n0) - n/tau - sigma*f*n + n_D*D/step**2)*dt + n", self._numexpr_name,
+        ne.cache_expression("(s*F*(1-n/n0) - n/tau - sigma*f*n + n_D*D)*dt + n", self._numexpr_name,
                             local_dict=local_dict)
 
     @property
@@ -61,7 +64,10 @@ class Experiment1D(ContinuumModel):
         """
         if not bonds:
             bonds = self.get_bonds()
-        self.r = np.arange(-bonds, bonds, self.step)
+        if self.coords == 'cartesian':
+            self.r = np.arange(-bonds, bonds, self.step)
+        elif self.coords == 'radial':
+            self.r = np.arange(0, bonds, self.step)
         return self.r
 
     def solve_steady_state(self, r=None, f=None, eps=1e-8, n_init=None, **kwargs):
@@ -178,7 +184,7 @@ class Experiment1D(ContinuumModel):
                     break
             n_check[...] = n
             n_D = self.__diffusion(n)
-            ne.re_evaluate('r_e', out=n, local_dict=local_dict(n, f, n_D))
+            ne.re_evaluate(self._numexpr_name, out=n, local_dict=local_dict(n, f, n_D))
             if self._validation_check(n):
                 print(f'p_o: {self.p_o}, tau_r: {self.tau_r}')
                 raise ValueError('Solution unstable!')
@@ -194,13 +200,14 @@ class Experiment1D(ContinuumModel):
                 skip = int(
                     (np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
                 if skip < 0:
-                    raise ValueError('Instability in solution, solution convergance deviates from exponential behavior.')
+                    raise ValueError('Instability in solution, solution convergence deviates from exponential behavior.')
                 prediction_step = skip  # next prediction will be after another norm is calculated
                 n_predictions += 1
                 if t:
                     t.total = skip
                     t.refresh()
         self.n = n
+        print(f'Time step: {self.dt} s')  # Print time step
         print(f'Total time elapsed: {time_elapsed} s')  # Print total time elapsed
         return n
 
@@ -309,7 +316,13 @@ class Experiment1D(ContinuumModel):
         return 10 * int(np.log(self.D) * np.log(self.f0))
 
     def __diffusion(self, n):
-        return laplace_1d(n)
+        if self.coords == 'cartesian':
+            n_D = laplace_1d(n) / self._step ** 2
+        elif self.coords == 'radial':
+            n_D = laplacian_radial_1d(n, self._r, self._step)
+        else:
+            raise ValueError('Coordinates not recognized, use \'cartesian\' or \'radial\'')
+        return n_D
 
     def analytic(self, r, f=None, out=None):
         """
@@ -361,6 +374,18 @@ class Experiment1D(ContinuumModel):
             n = 1
         r_lim = math.fabs((math.log(self.f0 + 1, 8) / 3 + 1) * (self.st_dev * 3) / (1.7 + math.log(n)))
         return r_lim
+
+    @property
+    def r(self):
+        """
+        Radially symmetric grid.
+        :return:
+        """
+        return self._r
+
+    @r.setter
+    def r(self, val):
+        self._r = val
 
     @property
     def R(self):
@@ -493,20 +518,46 @@ class Experiment1D(ContinuumModel):
     def plot(self, var, dpi=150):
         if var not in ['R', 'n', 'f']:
             raise ValueError(f'{var} is not spatially resolved. Use R, n or f')
-        if var == 'R':
-            y_label = 'R/sFV'
-        elif var == 'n':
-            y_label = 'n, 1/nm^2'
-        elif var == 'f':
-            y_label = 'f, 1/nm^2/s'
         fig, ax = plt.subplots(dpi=dpi)
         x = self.r
         y = self.__getattribute__(var)
         if y is None:
             raise ValueError(f'The attribute \'{var}\' is not set.')
+        if self.coords == 'cartesian':
+            y = y[x >= 0]
+            x = x[x >= 0]
         line, = ax.plot(x, y)
-        ax.set_xlabel('r, nm')
+        if var == 'R':
+            y_label = 'R/sFV'
+            plt.title('Normalized growth rate profile')
+        elif var == 'n':
+            y_label = 'n, 1/nm^2'
+            plt.title('Precursor coverage profile')
+        elif var == 'f':
+            y_label = 'f, 1/nm^2/s'
+            plt.title('Electron flux profile')
         ax.set_ylabel(y_label)
+        ax.set_xlabel('r, nm')
+        plt.grid()
+
+        # Add parameter box
+        param_text = (
+            f'Equation: {self.equation}\n'
+            f'Symmetry: {self.coords}\n'
+            f'Beam flux: {getattr(self, "f0", None):.3g}\n'
+            f'Beam size: {getattr(self, "fwhm", None):.3g}\n'
+            f'sF: {getattr(self, "s", None) * getattr(self, "F", None):.3g}\n'
+            f'Res. time: {getattr(self, "tau", None):.3g}\n'
+            f'D: {getattr(self, "D", None):.3g}\n'
+            f'Diss. coef.: {getattr(self, "sigma", None):.3g}\n'
+            f'Diff. repl.: {getattr(self, "p_o", None):.3g}\n'
+            f'Depletion: {getattr(self, "tau_r", None):.3g}\n'
+        )
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        ax.text(1.05, 0.5, param_text, transform=ax.transAxes, fontsize=8,
+                verticalalignment='center', bbox=props)
+
+        plt.tight_layout()
         plt.show()
 
     def interpolate(self, var):

@@ -23,7 +23,7 @@ class ContinuumModel(BeamSettings):
         self.D = 0.0  # nm^2/s
         self.V = 1.0  # nm^3
 
-        self.step = 1.0  # nm
+        self._step = 1.0  # nm
 
         self._dt = 1.0
         self._dt_diff = np.nan
@@ -45,6 +45,19 @@ class ContinuumModel(BeamSettings):
         self._p_o = np.nan
         self._phi1 = np.nan
         self._phi2 = np.nan
+
+
+    @property
+    def step(self):
+        """
+        Grid resolution, nm.
+        :return:
+        """
+        return self._step
+
+    @step.setter
+    def step(self, val):
+        self._step = val
 
     @property
     def dt(self):

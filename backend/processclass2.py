@@ -14,7 +14,8 @@ class Experiment1D_Dimensionless(Experiment1D):
     def __init__(self, backend='cpu'):
         super().__init__()
         self.backend = backend
-        self._numexpr_name = 'r_e'
+        self._numexpr_name = 'r_e_d'
+        self.equation = "dimensionless"
         self._step = np.nan
         self.tau_r = 1.0
         self.p_o = 1.0
@@ -25,7 +26,7 @@ class Experiment1D_Dimensionless(Experiment1D):
         n = 0.0
         n_D = 0.0
         local_dict = self._local_dict
-        ne.cache_expression("(1 - k * n + p_o**2*n_D/step**2)*dt + n", self._numexpr_name,
+        ne.cache_expression("(1 - k * n + p_o**2*n_D)*dt + n", self._numexpr_name,
                             local_dict=local_dict)
 
         self.s = np.nan
@@ -39,11 +40,11 @@ class Experiment1D_Dimensionless(Experiment1D):
     @property
     def _local_dict(self):
         k = (self.tau_r - 1) / self.f0 * self.f + 1
-        return dict(k=k, p_o=self.p_o, step=self.step*2/self.fwhm, dt=self.dt)
+        return dict(k=k, p_o=self.p_o, step=self._step, dt=self.dt)
 
     @property
     def step(self):
-        return self._step
+        return self._step/ 2 * self.fwhm
 
     @step.setter
     def step(self, val):
@@ -52,7 +53,15 @@ class Experiment1D_Dimensionless(Experiment1D):
         :param val:
         :return:
         """
-        self._step = val
+        self._step = val / self.fwhm * 2
+
+    @property
+    def r(self):
+        return self._r * self.fwhm / 2
+
+    @r.setter
+    def r(self, val):
+        self._r = val / self.fwhm * 2
 
     @property
     def R(self):
@@ -74,7 +83,7 @@ class Experiment1D_Dimensionless(Experiment1D):
     @property
     def dt_diff(self):
         if self.p_o > 0:
-            return (self.step / self.fwhm) ** 2 / (2 * self.p_o ** 2)
+            return self._step ** 2 / (2 * self.p_o ** 2)
         else:
             return 1
 
@@ -147,11 +156,11 @@ if __name__ == '__main__':
     pr_d.step = pr_d.fwhm / 200
     pr_d.backend = 'gpu'
     pr_d.solve_steady_state(progress=True)
-    print(pr_d.r_max_n)
+    # print(pr_d.r_max_n)
     pr_d.plot('R')
-    print([pr_d.fwhm_d, pr_d.fwhm])
-    print([pr_d.fwhm_d/pr_d.fwhm, pr_d.phi2])
-    print([2*pr_d.r_max/pr_d.fwhm, pr_d.R_ind1])
+    # print([pr_d.fwhm_d, pr_d.fwhm])
+    # print([pr_d.fwhm_d/pr_d.fwhm, pr_d.phi2])
+    # print([2*pr_d.r_max/pr_d.fwhm, pr_d.R_ind1])
     a = 246177
     b = 21036671, 20418414, 20596175
 
