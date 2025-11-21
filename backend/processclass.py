@@ -134,6 +134,9 @@ class Experiment1D(ContinuumModel):
         elif n_init == "full":
             n_init = np.full_like(r, self.nr)
         self.n = n_init
+        if type(t) in [float, int]:
+            if t <= 0:
+                return n_init
         if self.__backend == 'cpu':
             func = self._numeric
         elif self.__backend == 'gpu':
@@ -143,9 +146,14 @@ class Experiment1D(ContinuumModel):
         self._interp = None
         return n
 
-    def _numeric(self, f, eps=1e-8, n_init=None, t_solve=0, progress=False):
+    def _numeric(self, f, eps=1e-8, n_init=None, t_solve=None, progress=False):
         def local_dict(n, f, n_D):
             return self._local_dict | dict(n=n, f=f, n_D=n_D)
+        def solve_step(n, f, time_elapsed):
+            n_D = self.__diffusion(n)
+            ne.re_evaluate(self._numexpr_name, out=n, local_dict=local_dict(n, f, n_D))
+            time_elapsed += self.dt  # Increment time counter
+            return time_elapsed
         n_iters = int(1e9)
         n = np.copy(n_init)
         n_check = np.copy(n_init)
@@ -165,23 +173,33 @@ class Experiment1D(ContinuumModel):
             t = None
         i = 0
         iter_jump = 1000
+        k = 0
+        n_all = []
         while i < n_iters and flag_run:
-            step_iters = np.full((skip - i) // iter_jump + 1, iter_jump)
-            step_iters[-1] = (skip - i) % iter_jump
-            for step in step_iters:
-                for j in range(step):
-                    n_D = self.__diffusion(n)
-                    ne.re_evaluate(self._numexpr_name, out=n, local_dict=local_dict(n, f, n_D))
-                    time_elapsed += self.dt  # Increment time counter
-                    if t_solve:
-                        if time_elapsed >= t_solve:
-                            flag_run = False
-                            break
-                if t:
-                    t.update(step)
-                i = skip
-                if not flag_run:
-                    break
+            if type(t_solve) in [np.ndarray, list]:
+                if k >= len(t_solve):
+                    return n_all
+                while time_elapsed < t_solve[k]:
+                    time_elapsed = solve_step(n, f, time_elapsed)
+                    i += 1
+                else:
+                    k += 1
+                    n_all.append(np.copy(n))
+            else:
+                step_iters = np.full((skip - i) // iter_jump + 1, iter_jump)
+                step_iters[-1] = (skip - i) % iter_jump
+                for step in step_iters:
+                    for j in range(step):
+                        solve_step(n, f, time_elapsed)
+                        if t_solve:
+                            if time_elapsed >= t_solve:
+                                flag_run = False
+                                break
+                    if t:
+                        t.update(step)
+                    i = skip
+                    if not flag_run:
+                        break
             n_check[...] = n
             n_D = self.__diffusion(n)
             ne.re_evaluate(self._numexpr_name, out=n, local_dict=local_dict(n, f, n_D))
@@ -194,8 +212,11 @@ class Experiment1D(ContinuumModel):
             skip += skip_step
             if eps > norm:
                 # print(f'Reached solution with an error of {norm:.3e}')
-                break
+                if t_solve is None:
+                    break
             if i % prediction_step == 0:
+                if len(norm_array) < 3:
+                    continue
                 a, b = self.__fit_exponential(iters, norm_array)
                 skip = int(
                     (np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
@@ -559,6 +580,47 @@ class Experiment1D(ContinuumModel):
 
         plt.tight_layout()
         plt.show()
+
+    def precursor_coverge_temporal(self, r, exposure=0.0, f=None, n_init=None, N=100, offset=10, **kwargs):
+        """
+        Derive a precursor coverage for given times.
+
+        r, f and n_init must have the same length.
+        If f or n_init are not provided, they are generated automatically.
+
+        If n_init is not provided, an analytical solution is used.
+
+        :param r: radially symmetric grid
+        :param exposure: total expusure time, s
+        :param f: electron flux
+        :param n_init: initial precursor coverage
+        :param N: number of time points
+        :return: precursor coverage profiles at given times
+        """
+        time_offset = exposure / offset
+        times1 = np.linspace(-time_offset, 0, offset, endpoint=True)
+        times2 = np.linspace(0, exposure, N)[1:]
+        times3 = np.linspace(exposure, exposure + time_offset, offset, endpoint=False)[1:]
+        times = np.concatenate((times1, times2, times3))
+        n_all = np.zeros_like(times)
+        n_time = []
+        # for t in times2:
+        #     n = self.solve_for_time(t, r=r, f=f, n_init=n_init, **kwargs)
+        #     if self.coords == 'radial':
+        #         n_center = n[0]
+        #     if self.coords == 'cartesian':
+        #         n_center = n[r.size//2]
+        #     n_time.append(n_center)
+        n = self.solve_for_time(times2, r=r, f=f, n_init=n_init, **kwargs)
+        n_arr = np.array(n)
+        if self.coords == 'radial':
+            n_time = n_arr[:, 0]
+        if self.coords == 'cartesian':
+            n_time = n_arr[:, r.size // 2]
+        n_all[0:offset] = self.solve_for_time(0, r=r, f=f, n_init=n_init)[0]
+        n_all[offset:offset + N - 1] = np.array(n_time)
+        n_all[offset + N - 1:] = n_time[-1]
+        return n_all, times
 
     def interpolate(self, var):
         if var not in ['R', 'n']:
