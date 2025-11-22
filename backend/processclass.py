@@ -104,7 +104,9 @@ class Experiment1D(ContinuumModel):
         elif self.__backend == 'gpu':
             func = self._numeric_gpu
         if self.D != 0 or self.p_o != 0:
-            n = func(f, eps, n, **kwargs)
+            result = func(f, eps, n, **kwargs)
+            n_all, timestamps = result
+            n = n_all[-1]  # Use only the last solution
         self._interp = None
         return n
 
@@ -117,11 +119,11 @@ class Experiment1D(ContinuumModel):
 
         If n_init is not provided, an analytical solution is used.
 
-        :param t: time, s
+        :param t: time, s (or interval in microseconds if using interval mode)
         :param r: radially symmetric grid
         :param f: electron flux
         :param n_init: initial precursor coverage
-        :return: precursor coverage profile
+        :return: precursor coverage profile or tuple of (solutions, timestamps) if interval is used
         """
         if r is None:
             r = self.get_grid()
@@ -142,11 +144,38 @@ class Experiment1D(ContinuumModel):
         elif self.__backend == 'gpu':
             func = self._numeric_gpu
         if self.D != 0 or self.p_o != 0:
-            n = func(f, t_solve=t, n_init=n_init, **kwargs)
+            result = func(f, n_init=n_init, **kwargs)
+            n_all, timestamps = result
+            # Find the solution closest to time t
+            if 'interval' in kwargs and kwargs['interval'] is not None:
+                t_us = t * 1e6  # Convert to microseconds
+                idx = np.searchsorted(timestamps, t_us)
+                if idx == 0:
+                    n = n_all[0]
+                elif idx >= len(timestamps):
+                    n = n_all[-1]
+                else:
+                    # Linear interpolation between the two closest solutions
+                    t1, t2 = timestamps[idx - 1], timestamps[idx]
+                    n1, n2 = n_all[idx - 1], n_all[idx]
+                    weight = (t_us - t1) / (t2 - t1)
+                    n = n1 + weight * (n2 - n1)
+            else:
+                n = n_all[-1]  # Use only the last solution
         self._interp = None
         return n
 
-    def _numeric(self, f, eps=1e-8, n_init=None, t_solve=None, progress=False):
+    def _numeric(self, f, eps=1e-8, n_init=None, interval=None, progress=False):
+        """
+        Solve the reaction-diffusion equation numerically.
+
+        :param f: electron flux
+        :param eps: solution accuracy
+        :param n_init: initial precursor coverage
+        :param interval: time interval between saved solutions in microseconds (if None, solve to steady state)
+        :param progress: show progress bar
+        :return: if interval is None: solution array; else: (solutions_list, timestamps_list)
+        """
         def local_dict(n, f, n_D):
             return self._local_dict | dict(n=n, f=f, n_D=n_D)
         def solve_step(n, f, time_elapsed):
@@ -154,6 +183,7 @@ class Experiment1D(ContinuumModel):
             ne.re_evaluate(self._numexpr_name, out=n, local_dict=local_dict(n, f, n_D))
             time_elapsed += self.dt  # Increment time counter
             return time_elapsed
+
         n_iters = int(1e9)
         n = np.copy(n_init)
         n_check = np.copy(n_init)
@@ -166,40 +196,42 @@ class Experiment1D(ContinuumModel):
         norm_array = []
         iters = []
         time_elapsed = 0  # Initialize time counter
-        flag_run = True
+
+        # Storage for temporal solutions
+        n_all = []
+        timestamps = []
+        next_save_time = 0
+        interval_s = None
+
+        if interval is not None:
+            interval_s = interval * 1e-6  # Convert microseconds to seconds
+
         if progress:
             t = tqdm(total=n_iters)
         else:
             t = None
         i = 0
         iter_jump = 1000
-        k = 0
-        n_all = []
-        while i < n_iters and flag_run:
-            if type(t_solve) in [np.ndarray, list]:
-                if k >= len(t_solve):
-                    return n_all
-                while time_elapsed < t_solve[k]:
+        if interval is not None:
+            n_all.append(np.copy(n))
+            timestamps.append(time_elapsed)
+            next_save_time += interval_s
+
+        while i < n_iters:
+            # Check if we need to save solution at this time
+
+            step_iters = np.full((skip - i) // iter_jump + 1, iter_jump)
+            step_iters[-1] = (skip - i) % iter_jump
+            for step in step_iters:
+                for j in range(step):
                     time_elapsed = solve_step(n, f, time_elapsed)
-                    i += 1
-                else:
-                    k += 1
-                    n_all.append(np.copy(n))
-            else:
-                step_iters = np.full((skip - i) // iter_jump + 1, iter_jump)
-                step_iters[-1] = (skip - i) % iter_jump
-                for step in step_iters:
-                    for j in range(step):
-                        solve_step(n, f, time_elapsed)
-                        if t_solve:
-                            if time_elapsed >= t_solve:
-                                flag_run = False
-                                break
-                    if t:
-                        t.update(step)
-                    i = skip
-                    if not flag_run:
-                        break
+                    if interval is not None and time_elapsed >= next_save_time:
+                        n_all.append(np.copy(n))
+                        timestamps.append(time_elapsed)
+                        next_save_time += interval_s
+                if t:
+                    t.update(step)
+                i = skip
             n_check[...] = n
             n_D = self.__diffusion(n)
             ne.re_evaluate(self._numexpr_name, out=n, local_dict=local_dict(n, f, n_D))
@@ -212,8 +244,7 @@ class Experiment1D(ContinuumModel):
             skip += skip_step
             if eps > norm:
                 # print(f'Reached solution with an error of {norm:.3e}')
-                if t_solve is None:
-                    break
+                break
             if i % prediction_step == 0:
                 if len(norm_array) < 3:
                     continue
@@ -230,7 +261,10 @@ class Experiment1D(ContinuumModel):
         self.n = n
         print(f'Time step: {self.dt} s')  # Print time step
         print(f'Total time elapsed: {time_elapsed} s')  # Print total time elapsed
-        return n
+
+        n_all.append(np.copy(n))
+        timestamps.append(time_elapsed)
+        return n_all, timestamps
 
     def _numeric_gpu(self, f_init, eps=1e-8, n_init=None, progress=False, ctx=None, queue=None):
         # Padding array to fit a group size
@@ -581,9 +615,9 @@ class Experiment1D(ContinuumModel):
         plt.tight_layout()
         plt.show()
 
-    def precursor_coverge_temporal(self, r, exposure=0.0, f=None, n_init=None, N=100, offset=10, **kwargs):
+    def precursor_coverage_temporal(self, r, exposure=0.0, f=None, n_init=None, N=100, offset=10, **kwargs):
         """
-        Derive a precursor coverage for given times.
+        Derive a precursor coverage for given times with interpolation for denser point grid.
 
         r, f and n_init must have the same length.
         If f or n_init are not provided, they are generated automatically.
@@ -591,36 +625,71 @@ class Experiment1D(ContinuumModel):
         If n_init is not provided, an analytical solution is used.
 
         :param r: radially symmetric grid
-        :param exposure: total expusure time, s
+        :param exposure: total exposure time, s
         :param f: electron flux
         :param n_init: initial precursor coverage
         :param N: number of time points
-        :return: precursor coverage profiles at given times
+        :param offset: number of points before/after exposure for offset
+        :return: interpolated precursor coverage at center vs time, interpolated times
         """
-        time_offset = exposure / offset
-        times1 = np.linspace(-time_offset, 0, offset, endpoint=True)
-        times2 = np.linspace(0, exposure, N)[1:]
-        times3 = np.linspace(exposure, exposure + time_offset, offset, endpoint=False)[1:]
-        times = np.concatenate((times1, times2, times3))
-        n_all = np.zeros_like(times)
-        n_time = []
-        # for t in times2:
-        #     n = self.solve_for_time(t, r=r, f=f, n_init=n_init, **kwargs)
-        #     if self.coords == 'radial':
-        #         n_center = n[0]
-        #     if self.coords == 'cartesian':
-        #         n_center = n[r.size//2]
-        #     n_time.append(n_center)
-        n = self.solve_for_time(times2, r=r, f=f, n_init=n_init, **kwargs)
-        n_arr = np.array(n)
+        if r is None:
+            r = self.get_grid()
+        if f is None:
+            f = self.get_beam(r)
+        if n_init is None:
+            n_init = np.zeros_like(r)
+        elif n_init == "full":
+            n_init = np.full_like(r, self.nr)
+
+        # Calculate interval in microseconds to get approximately N points during exposure
+        if exposure > 0:
+            interval_us = (exposure / N) * 1e6  # Convert to microseconds
+        else:
+            interval_us = 1.0  # Default 1 microsecond interval
+        if self.__backend == 'cpu':
+            func = self._numeric
+        elif self.__backend == 'gpu':
+            func = self._numeric_gpu
+        # Solve with interval-based sampling
+        n_solutions, timestamps = func(f, n_init=n_init, interval=interval_us, **kwargs)
+
+        # Extract center values from solutions
+        n_arr = np.array(n_solutions)
         if self.coords == 'radial':
-            n_time = n_arr[:, 0]
-        if self.coords == 'cartesian':
-            n_time = n_arr[:, r.size // 2]
-        n_all[0:offset] = self.solve_for_time(0, r=r, f=f, n_init=n_init)[0]
-        n_all[offset:offset + N - 1] = np.array(n_time)
-        n_all[offset + N - 1:] = n_time[-1]
-        return n_all, times
+            n_center = n_arr[:, 0]
+        elif self.coords == 'cartesian':
+            n_center = n_arr[:, r.size // 2]
+        else:
+            # Default to radial if coords is not recognized
+            n_center = n_arr[:, 0]
+
+        timestamps = np.array(timestamps)
+
+        # Create denser time grid for interpolation
+        time_offset = exposure / offset if exposure > 0 else timestamps[-1] / offset
+        times1 = np.linspace(-time_offset, 0, offset, endpoint=True)
+        times2 = np.linspace(0, exposure if exposure > 0 else timestamps[-1], N)[1:]
+        times3 = np.linspace(exposure if exposure > 0 else timestamps[-1],
+                            (exposure if exposure > 0 else timestamps[-1]) + time_offset,
+                            offset, endpoint=False)[1:]
+        times_dense = np.concatenate((times1, times2, times3))
+
+        # Create interpolation function using cubic spline
+        from scipy.interpolate import CubicSpline
+        interp_func = CubicSpline(timestamps, n_center)
+
+        # Interpolate to dense grid
+        n_all = np.zeros_like(times_dense)
+        # Before exposure: use initial value
+        n_all[times_dense < 0] = n_center[0]
+        # During and after exposure: use interpolation
+        mask = times_dense >= 0
+        times_interp = times_dense[mask]
+        # Clip to valid range
+        times_interp = np.clip(times_interp, timestamps[0], timestamps[-1])
+        n_all[mask] = interp_func(times_interp)
+
+        return n_all, times_dense
 
     def interpolate(self, var):
         if var not in ['R', 'n']:
