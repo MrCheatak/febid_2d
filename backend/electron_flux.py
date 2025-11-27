@@ -94,9 +94,10 @@ class EFluxEstimator(BeamSettings):
         Integral of a (super) gaussian function.
         """
         if self.beam_type == "gauss":
-            return self.st_dev * sqrt(2 * pi)
+            return self.st_dev ** 2 * 2 * pi
         if self.beam_type == 'super_gauss':
-            return self.st_dev * sqrt(2) / self.order * gamma(1 / 2 / self.order)
+            return self.st_dev ** 2 * 2 / self.order * gamma(1 / 2 / self.order)
+        return None
 
 
 if __name__ == '__main__':

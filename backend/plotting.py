@@ -22,10 +22,13 @@ def plot(learner, npoints=300, tri_alpha=0.2, width=300, height=300, xlim=None, 
     if ylim is not None:
         plot.opts(ylim=ylim)
     plot.opts(width=width, height=height)
+
+    # Ensure a colorbar is shown; include hover tool if requested.
     if mouse_coords:
-        plot.opts(
-                opts.Image(tools=['hover']),
-                )
+        plot.opts(opts.Image(colorbar=True, tools=['hover']))
+    else:
+        plot.opts(opts.Image(colorbar=True))
+
     return plot
 
 def plot_map(x, y, z, title=None, xlim=None, ylim=None, xlabel=r'$p_{out}$', ylabel=r'$tau_r$', logx=False, logy=False,

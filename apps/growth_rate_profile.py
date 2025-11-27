@@ -31,6 +31,7 @@ pr.f0 = 1e7
 pr.fwhm = 300  # nm
 pr.order = 1
 pr.beam_type = 'super_gauss'
+pr.coords = 'cartesian'
 pr.step = 1  # nm
 pr.backend = 'cpu'
 

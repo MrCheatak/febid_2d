@@ -176,14 +176,25 @@ class Experiment1D(ContinuumModel):
         :param progress: show progress bar
         :return: if interval is None: solution array; else: (solutions_list, timestamps_list)
         """
-        def local_dict(n, f, n_D):
-            return self._local_dict | dict(n=n, f=f, n_D=n_D)
-        def solve_step(n, f, time_elapsed):
+        def local_dict(n, f, n_D, base_loc_dict=None):
+            if base_loc_dict is None:
+                loc = self._local_dict
+            else:
+                loc = base_loc_dict.copy()
+            loc = loc | dict(n=n, f=f, n_D=n_D)
+            return loc
+        def solve_step(n, f, time_elapsed, dt=None):
             n_D = self.__diffusion(n)
-            ne.re_evaluate(self._numexpr_name, out=n, local_dict=local_dict(n, f, n_D))
-            time_elapsed += self.dt  # Increment time counter
+            # loc_dict = local_dict(n, f, n_D, base_local_dict)
+            loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D)
+            ne.re_evaluate(self._numexpr_name, out=n, local_dict=loc_dict)
+            if dt is not None:
+                time_elapsed += dt
+            else:
+                time_elapsed += self.dt  # Increment time counter
             return time_elapsed
-
+        base_local_dict = self._local_dict
+        dt = self.dt
         n_iters = int(1e9)
         n = np.copy(n_init)
         n_check = np.copy(n_init)
@@ -224,7 +235,7 @@ class Experiment1D(ContinuumModel):
             step_iters[-1] = (skip - i) % iter_jump
             for step in step_iters:
                 for j in range(step):
-                    time_elapsed = solve_step(n, f, time_elapsed)
+                    time_elapsed = solve_step(n, f, time_elapsed, dt)
                     if interval is not None and time_elapsed >= next_save_time:
                         n_all.append(np.copy(n))
                         timestamps.append(time_elapsed)
@@ -258,12 +269,25 @@ class Experiment1D(ContinuumModel):
                 if t:
                     t.total = skip
                     t.refresh()
+
+        # Interpolate the exact time when accuracy reaches eps
+        if len(norm_array) >= 2 and norm < eps:
+            # Fit exponential one last time to get accurate convergence time
+            a, b = self.__fit_exponential(iters, norm_array)
+            # Calculate the exact iteration where norm would equal eps
+            iter_exact = (np.log(eps) - a) / b
+            # Calculate the corrected time elapsed
+            time_elapsed_corrected = iter_exact * dt
+        else:
+            time_elapsed_corrected = time_elapsed
+
         self.n = n
         print(f'Time step: {self.dt} s')  # Print time step
-        print(f'Total time elapsed: {time_elapsed} s')  # Print total time elapsed
+        print(f'Total time elapsed (actual): {time_elapsed} s')  # Print actual time elapsed
+        print(f'Total time elapsed (interpolated): {time_elapsed_corrected} s')  # Print interpolated time elapsed
 
         n_all.append(np.copy(n))
-        timestamps.append(time_elapsed)
+        timestamps.append(time_elapsed_corrected)
         return n_all, timestamps
 
     def _numeric_gpu(self, f_init, eps=1e-8, n_init=None, progress=False, ctx=None, queue=None):
@@ -356,9 +380,25 @@ class Experiment1D(ContinuumModel):
                 if t:
                     t.total = skip1
                     t.refresh()
+
+        # Interpolate the exact time when accuracy reaches eps
+        if len(norm_array) >= 2 and norm < eps:
+            # Fit exponential one last time to get accurate convergence time
+            a, b = self.__fit_exponential(iters, norm_array)
+            # Calculate the exact iteration where norm would equal eps
+            iter_exact = (np.log(eps) - a) / b
+            # Calculate the corrected time elapsed
+            time_elapsed_corrected = iter_exact * self.dt
+        else:
+            time_elapsed_corrected = i * self.dt
+
         cl.enqueue_copy(queue, n_f, n_dev)
         self.n = n_f[:N] / unit ** 2
-        return n
+
+        # Return in same format as CPU solver
+        n_all = [n_f[:N] / unit ** 2]
+        timestamps = [time_elapsed_corrected]
+        return n_all, timestamps
 
     def _validation_check(self, n):
         return n.max() > self.n0 or n.min() < 0
@@ -429,6 +469,23 @@ class Experiment1D(ContinuumModel):
             n = 1
         r_lim = math.fabs((math.log(self.f0 + 1, 8) / 3 + 1) * (self.st_dev * 3) / (1.7 + math.log(n)))
         return r_lim
+
+
+    @property
+    def tr(self, progress=False):
+        """
+        System relaxation time, s
+        """
+        r = self.get_grid()
+        f = self.get_beam(r)
+        n_init = np.full_like(r, self.nr)
+        if self.__backend == 'cpu':
+            func = self._numeric
+        elif self.__backend == 'gpu':
+            func = self._numeric_gpu
+        # Solve with interval-based sampling
+        n_solutions, timestamps = func(f, n_init=n_init, progress=progress)
+        return timestamps[-1]
 
     @property
     def r(self):
