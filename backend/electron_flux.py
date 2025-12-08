@@ -72,7 +72,8 @@ class EFluxEstimator(BeamSettings):
         """
         Pre-exponential factor for primary electron beam.
         """
-        if type(self.ie*1.0) is not float and type(self.fwhm*1.0) is not float:
+        types = [float, np.float_]
+        if type(self.ie*1.0) not in types and type(self.fwhm*1.0) not in types:
             f0_pe = np.outer(self.pe_flux, 1 / self._gauss_integral)
         else:
             f0_pe = self.pe_flux / self._gauss_integral
