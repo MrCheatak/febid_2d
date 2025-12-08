@@ -3,6 +3,8 @@ import numpy as np
 import numexpr_mod as ne
 import pyopencl as cl
 from tqdm import tqdm
+import matplotlib
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from scipy.interpolate import CubicSpline, PchipInterpolator, Akima1DInterpolator, make_interp_spline
 
@@ -32,6 +34,7 @@ class Experiment1D(ContinuumModel):
         self._numexpr_name = 'r_e'
         self.coords = coords  # 'radial' or 'cartesian'
         self.equation = 'conventional'  # 'conventional' or 'dimensionless'
+        self._tr = None
         n = 0.0
         n_D = 0.0
         f = 0.0
@@ -104,9 +107,10 @@ class Experiment1D(ContinuumModel):
         elif self.__backend == 'gpu':
             func = self._numeric_gpu
         if self.D != 0 or self.p_o != 0:
-            result = func(f, eps, n, **kwargs)
+            result = func(f=f, eps=eps, n_init=n, **kwargs)
             n_all, timestamps = result
             n = n_all[-1]  # Use only the last solution
+            self._tr = timestamps[-1]
         self._interp = None
         return n
 
@@ -165,7 +169,7 @@ class Experiment1D(ContinuumModel):
         self._interp = None
         return n
 
-    def _numeric(self, f, eps=1e-8, n_init=None, interval=None, progress=False):
+    def _numeric(self, f, eps=1e-8, n_init=None, interval=None, init_tol=1e-5, progress=False, verbose=False, plot_fit=False):
         """
         Solve the reaction-diffusion equation numerically.
 
@@ -185,8 +189,8 @@ class Experiment1D(ContinuumModel):
             return loc
         def solve_step(n, f, time_elapsed, dt=None):
             n_D = self.__diffusion(n)
-            # loc_dict = local_dict(n, f, n_D, base_local_dict)
-            loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D)
+            # Use the reduced dt value in the local dict for numexpr evaluation
+            loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D, dt=dt)
             ne.re_evaluate(self._numexpr_name, out=n, local_dict=loc_dict)
             if dt is not None:
                 time_elapsed += dt
@@ -207,7 +211,7 @@ class Experiment1D(ContinuumModel):
         norm_array = []
         iters = []
         time_elapsed = 0  # Initialize time counter
-
+        fit_offset = 0
         # Storage for temporal solutions
         n_all = []
         timestamps = []
@@ -259,10 +263,22 @@ class Experiment1D(ContinuumModel):
             if i % prediction_step == 0:
                 if len(norm_array) < 3:
                     continue
-                a, b = self.__fit_exponential(iters, norm_array)
+                a, b = self.__fit_exponential(iters[fit_offset:], norm_array[fit_offset:])
+                if plot_fit:
+                    if len(norm_array) < 4:
+                        fig, ax = _plot_solution_covergence(iters, norm_array, a, b, eps, dt=dt)
+                    else:
+                        fig, ax = _plot_solution_covergence(iters, norm_array, a, b, eps, fig, ax, dt=dt)
                 skip = int(
                     (np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
                 if skip < 0:
+                if len(norm_array) > 4:
+                    fit_offset += 1  # moving fitting window forward
+                if skip < 0 or skip > n_iters:
+                    print(f'Predicted convergence step out of bounds: skip={skip}, i={i}, n_iters={n_iters}')
+                    print(f'Fit parameters: a={a:.3e}, b={b:.3e}, eps={eps:.3e}')
+                    print(f'Recent norms: {norm_array[-5:]}')
+                    print(f'Recent iters: {iters[-5:]}')
                     raise ValueError('Instability in solution, solution convergence deviates from exponential behavior.')
                 prediction_step = skip  # next prediction will be after another norm is calculated
                 n_predictions += 1
@@ -282,9 +298,10 @@ class Experiment1D(ContinuumModel):
             time_elapsed_corrected = time_elapsed
 
         self.n = n
-        print(f'Time step: {self.dt} s')  # Print time step
-        print(f'Total time elapsed (actual): {time_elapsed} s')  # Print actual time elapsed
-        print(f'Total time elapsed (interpolated): {time_elapsed_corrected} s')  # Print interpolated time elapsed
+        if verbose:
+            print(f'Time step: {self.dt} s')  # Print time step
+            print(f'Total time elapsed (actual): {time_elapsed} s')  # Print actual time elapsed
+            print(f'Total time elapsed (interpolated): {time_elapsed_corrected} s')  # Print interpolated time elapsed
 
         n_all.append(np.copy(n))
         timestamps.append(time_elapsed_corrected)
@@ -467,14 +484,18 @@ class Experiment1D(ContinuumModel):
             n = self.order
         else:
             n = 1
-        r_lim = math.fabs((math.log(self.f0 + 1, 8) / 3 + 1) * (self.st_dev * 3) / (1.7 + math.log(n)))
-        return r_lim
+        r_lim = math.fabs((math.log(self.f0 + 1, 8) / 3 + 1) * (self.st_dev * 3) / (1.7 + math.log(n))) + 20
+        if self.D:
+            r_diff = math.sqrt(self.D * self.tau) * 5
+        elif self.p_o:
+            r_diff = math.sqrt(self.tau_r * self.p_o)
+        return max(r_lim, r_diff)
 
 
     @property
     def tr(self, progress=False):
         """
-        System relaxation time, s
+        System relaxation time from a fully replenished state, s
         """
         r = self.get_grid()
         f = self.get_beam(r)
@@ -484,7 +505,7 @@ class Experiment1D(ContinuumModel):
         elif self.__backend == 'gpu':
             func = self._numeric_gpu
         # Solve with interval-based sampling
-        n_solutions, timestamps = func(f, n_init=n_init, progress=progress)
+        n_solutions, timestamps = func(f=f, n_init=n_init, progress=progress)
         return timestamps[-1]
 
     @property
@@ -823,6 +844,46 @@ class Experiment1D(ContinuumModel):
         pr.order = self.order
         pr.backend = self.backend
         return pr
+
+
+def _plot_solution_covergence(iters, norm_array, a=None, b=None, eps=None, fig=None, ax=None, dt=None):
+    if fig is None or ax is None:
+        fig, ax = plt.subplots(dpi=150)
+    else:
+        ax.cla()
+    ax.semilogy(iters, norm_array, 'o', label='Achieved accuracy')
+    if a is not None and b is not None:
+        x_fit = np.linspace(0, iters[-1], 300)
+        y_fit = np.exp(a) * np.exp(b * x_fit)
+        ax.semilogy(x_fit, y_fit, '-', label='Fitted convergence')
+        if eps is not None:
+            iter_exact = (np.log(eps) - a) / b
+            ax.axvline(iter_exact, color='r', linestyle='--', label='Predicted convergence iteration')
+            ax.semilogy([iter_exact], [eps], 'rx', label='Predicted convergence point')
+    if dt is not None:
+        try:
+            # Add a secondary x-axis (top) showing time in seconds: time = iterations * dt
+            ax_sec = ax.secondary_xaxis('top', functions=(lambda x: x * dt, lambda t: t / dt))
+            ax_sec.set_xlabel('Time (s)')
+        except Exception:
+            # Fallback for older matplotlib: create a twinned top axis and set tick labels manually
+            ax_top = ax.twiny()
+            xticks = ax.get_xticks()
+            ax_top.set_xticks(xticks)
+            ax_top.set_xbound(ax.get_xbound())
+            ax_top.set_xticklabels([f"{(val * dt):.3g}" for val in xticks])
+            ax_top.set_xlabel('Time (s)')
+
+        ax.set_xlabel('Iterations')
+        ax.set_ylabel('Norm')
+        ax.set_title('Solution Convergence')
+        ax.legend()
+        ax.grid()
+        fig.savefig('convergence_plot.png', dpi=300)
+        fig.tight_layout()
+        plt.show(block=False)
+        plt.pause(0.1)
+        return fig, ax
 
 
 if __name__ == '__main__':
