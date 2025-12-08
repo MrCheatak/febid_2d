@@ -80,7 +80,7 @@ class Experiment1D(ContinuumModel):
             self.r = np.arange(0, bonds, self.step)
         return self.r
 
-    def solve_steady_state(self, r=None, f=None, eps=1e-8, n_init=None, **kwargs):
+    def solve_steady_state(self, r=None, f=None, eps=1e-4, n_init=None, **kwargs):
         """
         Derive a steady state precursor coverage.
 
@@ -176,7 +176,7 @@ class Experiment1D(ContinuumModel):
         self._interp = None
         return n
 
-    def _numeric(self, f, eps=1e-8, n_init=None, interval=None, init_tol=1e-5, progress=False, verbose=False, plot_fit=False):
+    def _numeric(self, f, eps=1e-4, n_init=None, interval=None, init_tol=1e-5, progress=False, verbose=False, plot_fit=False):
         """
         Solve the reaction-diffusion equation numerically.
 
@@ -222,46 +222,61 @@ class Experiment1D(ContinuumModel):
             return time_elapsed
 
         def solver_step_im(n, f, time_elapsed, dt=None):
-            """Solve one time step using Strang operator splitting.
-            Strang splitting:
-            1. Explicit reaction half-step (source + desorption)
-            2. Implicit diffusion full-step
-            3. Explicit reaction half-step
+            """
+            Solve one time step using the coupled Crank-Nicolson solver.
+
+            Now handles Diffusion + Reaction + Source in a single implicit step.
+            No Strang splitting required.
             """
             if dt is None:
                 dt = self.dt
-            # Step 1: Exact reaction half-step
-            n_half = reaction_step_exact(n, f, 0.5 * dt)
 
-            # Step 2: Implicit diffusion full-step using CN solver
-            # Use the solver directly for pure diffusion (no source)
-            n_star = self.solver.step(n_half, source=None)
-
-            # Step 3: Exact reaction half-step
-            n_new = reaction_step_exact(n_star, f, 0.5 * dt)
+            # The solver.step() method now handles the full physics (D, K, S).
+            # It returns a new array, so we copy it back into 'n' to update state in-place.
+            n_new = self.solver.step(n, dt=dt)
+            n[:] = n_new
 
             # Update time
-            time_elapsed += dt
-
-            # Write result back to n (in-place)
-            n[:] = n_new
+            if dt is not None:
+                time_elapsed += dt
+            else:
+                time_elapsed += self.dt
 
             return time_elapsed
         # Choose solver function and time step based on numerical scheme
         if self.num_scheme == 'cn':
             r = self._r
             D = self.D
+            # Pre-calculate Linear Reaction Terms
+            # Decay rate K(r) = s*F/n0 + 1/tau + sigma*f
+            # Source term S(r) = s*F
+            # Note: We assume 'f' is constant for this solve run.
+            reaction_k = self.s * self.F / self.n0 + 1 / self.tau + self.sigma * f
+            reaction_s = self.s * self.F
             # dt = min(self.dt_des, self.dt_diss) # Crank-Nicolson allows larger time steps
             dt = self.dt_fd * 5
             dt_min = self.dt_fd * 0.1
-            dt_max = self.dt * 100
+            dt_max = self.dt * 1000
             dts = [dt]
             self.dt_cn = dt
-            self.solver = CrankNicolsonRadialSolver(r=r, D=D, dt=dt, bc_outer="neumann")
+            # Initialize solver with reaction terms
+            self.solver = CrankNicolsonRadialSolver(
+                r=r,
+                D=D,
+                dt=dt,
+                reaction_k=reaction_k,
+                reaction_s=reaction_s,
+                bc_outer="neumann"
+            )
             solver_func = solver_step_im
+            eps_pre1 = eps * 5
+            eps_pre2 = eps * 1.5
+            eps_final = eps
+            eps_list = [eps_pre1, eps_pre2, eps_final]
         else:
             dt = self.dt
             solver_func = solve_step
+            eps_list = [eps]
         base_local_dict = self._local_dict
 
         n_iters = int(1e9)  # maximum allowed number of iterations per solution
@@ -278,6 +293,7 @@ class Experiment1D(ContinuumModel):
         norm = 1  # achieved accuracy
         norm_array = []
         iters = []
+        time_array = []
         time_elapsed = 0  # Initialize time counter
         fit_offset = 0
         # Storage for temporal solutions
@@ -285,7 +301,7 @@ class Experiment1D(ContinuumModel):
         timestamps = []
         next_save_time = 0
         interval_s = None
-
+        final_eps = False
         if interval is not None:
             interval_s = interval * 1e-6  # Convert microseconds to seconds
 
@@ -299,118 +315,165 @@ class Experiment1D(ContinuumModel):
             n_all.append(np.copy(n))
             timestamps.append(time_elapsed)
             next_save_time += interval_s
+        for k, ep in enumerate(eps_list):
+            while i < n_iters:
+                # Check if we need to save solution at this time
 
-        while i < n_iters:
-            # Check if we need to save solution at this time
+                step_iters = np.full((skip - i) // iter_jump + 1, iter_jump)
+                step_iters[-1] = (skip - i) % iter_jump
+                for step in step_iters:
+                    for j in range(step):
+                        time_elapsed = solver_func(n, f, time_elapsed, dt)
+                        if interval is not None and time_elapsed >= next_save_time:
+                            n_all.append(np.copy(n))
+                            timestamps.append(time_elapsed)
+                            next_save_time += interval_s
+                    if t:
+                        t.update(step)
+                i = skip
 
-            step_iters = np.full((skip - i) // iter_jump + 1, iter_jump)
-            step_iters[-1] = (skip - i) % iter_jump
-            for step in step_iters:
-                for j in range(step):
-                    time_elapsed = solver_func(n, f, time_elapsed, dt)
-                    if interval is not None and time_elapsed >= next_save_time:
-                        n_all.append(np.copy(n))
-                        timestamps.append(time_elapsed)
-                        next_save_time += interval_s
-                if t:
-                    t.update(step)
+                # Check convergence by comparing current state with saved state
+                if self.num_scheme == 'cn':
+                    # Use the exact operator from the class
+                    res = self.solver.compute_residual(n)
+                    # Metric: Relative L2 Norm of the residual (1/s)
+                    # || dn/dt || / || n ||
+                    norm = np.linalg.norm(res) / np.linalg.norm(n)
+                    n_check[...] = n  # Save current state for next iteration
+                    solver_step_im(n, f, time_elapsed, dt / 2)
+                    solver_step_im(n, f, time_elapsed, dt / 2)
+                    n_half_2[...] = n
+                    n[...] = n_check  # Restore state
+                    time_elapsed = solver_step_im(n, f, time_elapsed, dt)
+                    # err = np.max(np.abs(n_half_2 - n))
+                    err = np.linalg.norm(n_half_2[:] - n[:]) / np.linalg.norm(n_half_2[:])
+                    if verbose and i % (skip_step * 10) == 0:
+                            print(f"CN iter {i}: norm = {norm:.3e}, n_max = {n.max():.4f}, n_min = {n.min():.4f}")
+                else:
+                    # For explicit FD, take one full step and two half-steps to estimate error
+                    n_check[...] = n  # Save current state for next iteration
+                    # Two half-steps
+                    n_D = self.__diffusion(n)
+                    loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D)
+                    loc_dict['dt'] = dt / 2
+                    ne.re_evaluate(self._numexpr_name, out=n, local_dict=loc_dict)
+                    n_D = self.__diffusion(n)
+                    loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D)
+                    loc_dict['dt'] = dt / 2
+                    ne.re_evaluate(self._numexpr_name, out=n, local_dict=loc_dict)
+                    n_half_2[...] = n  # Save two half-step result
+                    n[...] = n_check  # Restore state
+                    # One full step
+                    n_D = self.__diffusion(n)
+                    loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D)
+                    ne.re_evaluate(self._numexpr_name, out=n, local_dict=loc_dict)
+                    norm = np.linalg.norm(n[:] - n_check[:])/np.linalg.norm(n[:]) / dt  # relative norm
+                    if self._validation_check(n):
+                        print(f'p_o: {self.p_o}, tau_r: {self.tau_r}')
+                        raise ValueError('Solution unstable!')
 
-            # Check convergence by comparing current state with saved state
-            i = skip
-
-            if self.num_scheme == 'cn':
-                # For CN, take one full step and two half-steps to estimate error
-                n_check[...] = n  # Save current state for next iteration
-                time_elapsed = solver_step_im(n, f, time_elapsed, dt/2)
-                time_elapsed = solver_step_im(n, f, time_elapsed, dt/2)
-                n_half_2[...] = n
-                n[...] = n_check  # Restore state
-                time_elapsed = solver_step_im(n, f, time_elapsed, dt)
-                # err = np.max(np.abs(n_half_2 - n))
-                err = np.linalg.norm(n_half_2[:] - n[:])/np.linalg.norm(n_half_2[:])  # relative norm
-                norm = np.linalg.norm(n[:] - n_check[:])/np.linalg.norm(n[:])  # relative norm
-                if verbose and i % (skip_step * 10) == 0:
-                    print(f"CN iter {i}: norm = {norm:.3e}, n_max = {n.max():.4f}, n_min = {n.min():.4f}")
-            else:
-                # For explicit FD, take one full step and two half-steps to estimate error
-                n_check[...] = n  # Save current state for next iteration
-                # Two half-steps
-                n_D = self.__diffusion(n)
-                loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D)
-                loc_dict['dt'] = dt / 2
-                ne.re_evaluate(self._numexpr_name, out=n, local_dict=loc_dict)
-                n_D = self.__diffusion(n)
-                loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D)
-                loc_dict['dt'] = dt / 2
-                ne.re_evaluate(self._numexpr_name, out=n, local_dict=loc_dict)
-                n_half_2[...] = n  # Save two half-step result
-                n[...] = n_check  # Restore state
-                # One full step
-                n_D = self.__diffusion(n)
-                loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D)
-                ne.re_evaluate(self._numexpr_name, out=n, local_dict=loc_dict)
-                norm = np.linalg.norm(n[:] - n_check[:])/np.linalg.norm(n[:])  # relative norm
-                if self._validation_check(n):
-                    print(f'p_o: {self.p_o}, tau_r: {self.tau_r}')
-                    raise ValueError('Solution unstable!')
-
-            norm_array.append(norm)  # recording achieved accuracy for fitting
-            iters.append(i)
-            skip += skip_step
-            if eps > norm:
-                # print(f'Reached solution with an error of {norm:.3e}')
-                break
-            if i % prediction_step == 0:
-                if len(norm_array) < 3:
-                    continue
-                a, b = self.__fit_exponential(iters[fit_offset:], norm_array[fit_offset:])
-                if plot_fit:
-                    if len(norm_array) < 4:
-                        fig, ax = _plot_solution_covergence(iters, norm_array, a, b, eps, dt=dt)
+                norm_array.append(norm)  # recording achieved accuracy for fitting
+                iters.append(i)
+                time_array.append(time_elapsed)
+                skip += skip_step
+                if ep > norm:
+                    # print(f'Reached solution with an error of {norm:.3e}')
+                    fit_offset += 2
+                    if k+1 == len(eps_list) - 1:  # final eps reached
+                        final_eps = True
+                        dt = self.dt_fd
+                        dts.append(dt)
+                        iters.append(i)
+                        norm_array.append(norm)
+                        time_array.append(time_elapsed)
+                    if plot_fit:
+                        a, b = self.__fit_exponential(iters[fit_offset:], norm_array[fit_offset:])
+                        if len(norm_array) < 4:
+                            fig, ax = _plot_solution_covergence(iters, norm_array, a, b, ep, dt=dt, times=time_array)
+                        else:
+                            fig, ax = _plot_solution_covergence(iters, norm_array, a, b, ep, fig, ax, dt=dt, times=time_array)
+                    break
+                if i % prediction_step == 0 or i > prediction_step:
+                    if len(norm_array) < 3:
+                        continue
+                    a, b = self.__fit_exponential(iters[fit_offset:], norm_array[fit_offset:])
+                    if plot_fit:
+                        if len(norm_array) < 4:
+                            fig, ax = _plot_solution_covergence(iters, norm_array, a, b, ep, dt=dt, times=time_array)
+                        else:
+                            fig, ax = _plot_solution_covergence(iters, norm_array, a, b, ep, fig, ax, dt=dt, times=time_array)
+                    skip = int(
+                        (np.log(ep) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
+                    if len(norm_array) > 4:
+                        fit_offset += 1  # moving fitting window forward
+                    if skip < 0 or skip > n_iters:
+                        print(f'Predicted convergence step out of bounds: skip={skip}, i={i}, n_iters={n_iters}')
+                        print(f'Fit parameters: a={a:.3e}, b={b:.3e}, eps={eps:.3e}')
+                        print(f'Recent norms: {norm_array[-5:]}')
+                        print(f'Recent iters: {iters[-5:]}')
+                        raise ValueError('Instability in solution, solution convergence deviates from exponential behavior.')
+                    prediction_step = skip  # next prediction will be after another norm is calculated
+                    n_predictions += 1
+                if self.num_scheme == 'cn':
+                    if not final_eps:
+                        if err < tol:
+                            err_prev = err
+                            dt_new = dt * 0.9 * (tol / err) ** (1/3) * (tol / err_prev) ** 0.2  # adjust time step based on error
+                            dt = np.clip(dt_new, dt_min, dt_max)
+                            dts.append(dt)
+                        else:  # Reject step
+                            dt = dt * 0.9 * (tol / err) ** (0.35)  # Reduce dt
+                            dt = max(dt, dt_min)
                     else:
-                        fig, ax = _plot_solution_covergence(iters, norm_array, a, b, eps, fig, ax, dt=dt)
-                skip = int(
-                    (np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
-                if len(norm_array) > 4:
-                    fit_offset += 1  # moving fitting window forward
-                if skip < 0 or skip > n_iters:
-                    print(f'Predicted convergence step out of bounds: skip={skip}, i={i}, n_iters={n_iters}')
-                    print(f'Fit parameters: a={a:.3e}, b={b:.3e}, eps={eps:.3e}')
-                    print(f'Recent norms: {norm_array[-5:]}')
-                    print(f'Recent iters: {iters[-5:]}')
-                    raise ValueError('Instability in solution, solution convergence deviates from exponential behavior.')
-                prediction_step = skip  # next prediction will be after another norm is calculated
-                n_predictions += 1
-            if self.num_scheme == 'cn':
-                if err < tol:
-                    err_prev = err
-                    dt_new = dt * 0.9 * (tol / err) ** (1/3) * (tol / err_prev) ** 0.2  # adjust time step based on error
-                    dt = np.clip(dt_new, dt_min, dt_max)
-                    dts.append(dt)
-                else:  # Reject step
-                    dt = dt * 0.9 * (tol / err) ** (0.35)  # Reduce dt
-                    dt = max(dt, dt_min)
-                self.dt_cn = dt
-            if t:
-                t.total = skip
-                t.refresh()
+                        dt = self.dt_fd
+                        dts.append(dt)
+                    self.dt_cn = dt
+
+                    if t:
+                        t.total = skip
+                        t.refresh()
 
         # Interpolate the exact time when accuracy reaches eps
         if len(norm_array) >= 2 and norm < eps:
-            # Fit exponential one last time to get accurate convergence time
-            a, b = self.__fit_exponential(iters, norm_array)
-            # Calculate the exact iteration where norm would equal eps
-            iter_exact = (np.log(eps) - a) / b
-            # Calculate the corrected time elapsed
-            time_elapsed_corrected = iter_exact * dt
+            if self.num_scheme == 'cn':
+                # We want to find t where norm(t) = eps
+                # Model: ln(norm) = slope * time + intercept
+
+                # Use the last few points (e.g., last 5) for better local accuracy near steady state
+                n_points = min(len(norm_array), 5)
+
+                # Get arrays for fitting
+                y_data = np.log(np.array(norm_array[-n_points:]))
+                x_data = np.array(time_array[-n_points:])
+
+                # Linear regression: y = mx + c
+                # Using numpy's polyfit for stability (degree 1)
+                slope, intercept = np.polyfit(x_data, y_data, 1)
+
+                # Solve for t: ln(eps) = slope * t + intercept
+                # t = (ln(eps) - intercept) / slope
+                target_log = np.log(eps)
+                time_elapsed_corrected = (target_log - intercept) / slope
+            elif self.num_scheme == 'fd':
+                # Fit exponential one last time to get accurate convergence time
+                a, b = self.__fit_exponential(iters, norm_array)
+                # Calculate the exact iteration where norm would equal eps
+                iter_exact = (np.log(eps) - a) / b
+                # Calculate the corrected time elapsed
+                time_elapsed_corrected = iter_exact * dt
         else:
             time_elapsed_corrected = time_elapsed
 
         self.n = n
         if verbose:
-            print(f'Time step: {self.dt} s')  # Print time step
+            if self.num_scheme == 'cn' and len(dts) > 0:
+                print(f'Adaptive time stepping used: dt_min = {min(dts):.3e} s, dt_max = {max(dts):.3e} s, dt_final = {dts[-1]:.3e} s')
+            else:
+                print(f'Time step: {self.dt} s')  # Print time step
             print(f'Total time elapsed (actual): {time_elapsed} s')  # Print actual time elapsed
-            print(f'Total time elapsed (interpolated): {time_elapsed_corrected} s')  # Print interpolated time elapsed
+            print(f'Total time elapsed (corrected): {time_elapsed_corrected} s')  # Print corrected time elapsed
+            print(f'Number of convergence checks: {len(iters)}')
+            print(f'Final iteration: {i}, Final norm: {norm:.3e}')
 
         n_all.append(np.copy(n))
         timestamps.append(time_elapsed_corrected)
@@ -989,11 +1052,14 @@ class Experiment1D(ContinuumModel):
         return pr
 
 
-def _plot_solution_covergence(iters, norm_array, a=None, b=None, eps=None, fig=None, ax=None, dt=None):
-    if fig is None or ax is None:
-        fig, ax = plt.subplots(dpi=150)
+def _plot_solution_covergence(iters, norm_array, a=None, b=None, eps=None, fig=None, axes=None, dt=None, times=None):
+    if fig is None or axes is None:
+        fig = plt.figure(dpi=150)
+        ax = fig.add_subplot(111)
     else:
+        ax, ax_sec = axes
         ax.cla()
+        ax_sec.cla()
     ax.semilogy(iters, norm_array, 'o', label='Achieved accuracy')
     if a is not None and b is not None:
         x_fit = np.linspace(0, iters[-1], 300)
@@ -1003,30 +1069,46 @@ def _plot_solution_covergence(iters, norm_array, a=None, b=None, eps=None, fig=N
             iter_exact = (np.log(eps) - a) / b
             ax.axvline(iter_exact, color='r', linestyle='--', label='Predicted convergence iteration')
             ax.semilogy([iter_exact], [eps], 'rx', label='Predicted convergence point')
-    if dt is not None:
+    if times is not None:
         try:
             # Add a secondary x-axis (top) showing time in seconds: time = iterations * dt
-            ax_sec = ax.secondary_xaxis('top', functions=(lambda x: x * dt, lambda t: t / dt))
+            # ax_sec = ax.secondary_xaxis('top', functions=(lambda x: x * dt, lambda t: t / dt))
+            if axes is None:
+                ax_sec = ax.twiny()
+            ax_sec.semilogy(times, norm_array, 'x', alpha=0)  # Dummy plot to set scale
             ax_sec.set_xlabel('Time (s)')
+            if eps is not None:
+                # Use the last few points (e.g., last 5) for better local accuracy near steady state
+                n_points = min(len(norm_array), 5)
+
+                # Get arrays for fitting
+                y_data = np.log(np.array(norm_array[-n_points:]))
+                x_data = np.array(times[-n_points:])
+
+                # Linear regression: y = mx + c
+                # Using numpy's polyfit for stability (degree 1)
+                slope, intercept = np.polyfit(x_data, y_data, 1)
+
+                # Solve for t: ln(eps) = slope * t + intercept
+                # t = (ln(eps) - intercept) / slope
+                target_log = np.log(eps)
+                time_elapsed_corrected = (target_log - intercept) / slope
+                ax_sec.semilogy([time_elapsed_corrected], [eps], '*', alpha=0)
         except Exception:
             # Fallback for older matplotlib: create a twinned top axis and set tick labels manually
-            ax_top = ax.twiny()
-            xticks = ax.get_xticks()
-            ax_top.set_xticks(xticks)
-            ax_top.set_xbound(ax.get_xbound())
-            ax_top.set_xticklabels([f"{(val * dt):.3g}" for val in xticks])
-            ax_top.set_xlabel('Time (s)')
+            print("Warning: Could not create secondary x-axis.")
 
-        ax.set_xlabel('Iterations')
-        ax.set_ylabel('Norm')
-        ax.set_title('Solution Convergence')
-        ax.legend()
-        ax.grid()
-        fig.savefig('convergence_plot.png', dpi=300)
-        fig.tight_layout()
-        plt.show(block=False)
-        plt.pause(0.1)
-        return fig, ax
+    ax.set_xlabel('Iterations')
+    ax.set_ylabel('Norm')
+    ax.set_title('Solution Convergence')
+    ax.legend()
+    ax.grid()
+    fig.savefig('convergence_plot.png', dpi=300)
+    fig.tight_layout()
+    plt.show(block=False)
+    plt.pause(0.1)
+    # plt.ion()
+    return fig, (ax, ax_sec)
 
 
 if __name__ == '__main__':

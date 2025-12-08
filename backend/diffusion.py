@@ -60,61 +60,58 @@ def laplacian_radial_1d(n, r, dr, bc_outer="neumann", dirichlet_value=0):
 
 class CrankNicolsonRadialSolver:
     """
-    Crank-Nicolson solver for radial diffusion equation.
-
-    Solves: ∂n/∂t = D * (∂²n/∂r² + (1/r)∂n/∂r) + S(r,t)
+    Crank-Nicolson solver for radial reaction-diffusion equation.
 
     Uses implicit Crank-Nicolson scheme with LU factorization of the
     coefficient matrix for efficient time-stepping.
 
     The matrix is factored once during initialization and reused for all steps.
+
+    Solves: ∂n/∂t = D * (∂²n/∂r² + (1/r)∂n/∂r) - K(r)*n + S(r)
     """
 
-    def __init__(self, r, D, dt, bc_outer="neumann", dirichlet_value=0):
+    def __init__(self, r, D, dt, reaction_k=0.0, reaction_s=0.0, bc_outer="neumann", dirichlet_value=0):
         """
-        Initialize the Crank-Nicolson solver.
-
-        :param r: 1D array of radial positions (including r=0)
-        :param D: diffusion coefficient
-        :param dt: time step
-        :param bc_outer: "neumann" (zero gradient) or "dirichlet"
-        :param dirichlet_value: value for Dirichlet BC at outer boundary
+        :param r: Radial grid
+        :param D: Diffusion coefficient
+        :param dt: Initial time step
+        :param reaction_k: Linear decay rate (scalar or array matching r). Corresponds to (s*F/n0 + 1/tau + sigma*f)
+        :param reaction_s: Constant source term (scalar or array). Corresponds to (s*F)
         """
         self.r = r
         self.N = len(r)
         self.D = D
-        self.dt = dt
-        self.dr = r[1] - r[0]  # assuming uniform grid
+        self.dr = r[1] - r[0]
         self.bc_outer = bc_outer
         self.dirichlet_value = dirichlet_value
 
-        # precompute common scalars
-        self._alpha = 0.5 * self.dt * self.D
+        # Store reaction terms
+        self.k = reaction_k
+        self.s = reaction_s
+
         self._inv_dr2 = 1.0 / (self.dr * self.dr)
 
-        # precompute coefficients for interior points (i = 1..N-2)
-        # coef_2nd is constant for all interior points; coef_1st depends on r[i]
+        # Initialize time-dependent parameters
+        self.set_dt(dt)
+
+    def set_dt(self, dt):
+        """Update time step and rebuild matrix if dt changes."""
+        self.dt = dt
+        self._alpha = 0.5 * self.dt * self.D
+
+        # Precompute diffusion coefficients based on new alpha
         if self.N > 2:
             interior_r = self.r[1:-1]
             self._coef_2nd_interior = self._alpha * self._inv_dr2
             self._coef_1st_interior = self._alpha / (2.0 * self.dr * interior_r)
-        else:
-            self._coef_2nd_interior = None
-            self._coef_1st_interior = None
 
-        # Build the tridiagonal matrix for implicit step in banded form
-        # (I - 0.5*dt*D*L) * n^{k+1} = (I + 0.5*dt*D*L) * n^k + dt*S
+        # Rebuild the matrix with new dt
         self.ab = self._build_implicit_banded_matrix()
 
     def _build_implicit_banded_matrix(self):
-        """Build the coefficient matrix for the implicit step in banded form.
-
-        Matrix form: (I - 0.5*dt*D*L) where L is the radial Laplacian operator.
-
-        The returned array `ab` has shape (3, N) and SciPy `solve_banded`
-        layout with one upper and one lower diagonal: `ab[0]` is the
-        upper diagonal (shifted right by one), `ab[1]` the main diagonal,
-        and `ab[2]` the lower diagonal (shifted left by one).
+        """
+        Build (I - dt/2 * (D*Laplacian - K)).
+        Result is banded matrix for (I - 0.5*dt*D*L + 0.5*dt*K) * n^{k+1}
         """
         N = self.N
         dr = self.dr
@@ -125,52 +122,49 @@ class CrankNicolsonRadialSolver:
         main = np.ones(N)
         upper = np.zeros(N)
 
-        # Center point (r=0): use symmetry boundary condition
-        # Laplacian at r=0: 4*(n[1] - n[0])/dr^2
-        main[0] = 1.0 + 4.0 * alpha * self._inv_dr2
-        upper[0] = -4.0 * alpha * self._inv_dr2
+        # 1. Diffusion Operator Contribution
 
-        # Interior points (i = 1 to N-2)
+        # Center point (r=0) symmetry: Laplacian = 4*(n[1]-n[0])/dr^2
+        main[0] += 4.0 * alpha * self._inv_dr2
+        upper[0] -= 4.0 * alpha * self._inv_dr2
+
+        # Interior points
         if N > 2:
-            coef_2nd = alpha * self._inv_dr2
-            coef_1st = alpha / (2.0 * dr * r[1:-1])
+            coef_2nd = self._coef_2nd_interior
+            coef_1st = self._coef_1st_interior
 
-            lower[1:-1] = -(coef_2nd - coef_1st)
-            main[1:-1] = 1.0 + 2.0 * coef_2nd
-            upper[1:-1] = -(coef_2nd + coef_1st)
+            lower[1:-1] -= (coef_2nd - coef_1st)
+            main[1:-1] += 2.0 * coef_2nd
+            upper[1:-1] -= (coef_2nd + coef_1st)
 
-        # Outer boundary (i = N-1)
+        # Outer boundary
         if self.bc_outer == "neumann":
-            # Zero gradient: n/r = 0
-            # Using ghost point: n_N = n_{N-2}
-            # Laplacian: 2*(n_{N-2} - n_{N-1})/dr^2
-            lower[-1] = -2.0 * alpha * self._inv_dr2
-            main[-1] = 1.0 + 2.0 * alpha * self._inv_dr2
+            lower[-1] -= 2.0 * alpha * self._inv_dr2
+            main[-1] += 2.0 * alpha * self._inv_dr2
         elif self.bc_outer == "dirichlet":
-            # Fixed value at boundary
-            # Ghost point: n_N = 2*n_bc - n_{N-1}
             ri = r[-1]
             coef_2nd = alpha * self._inv_dr2
             coef_1st = alpha / (2.0 * dr * ri)
+            lower[-1] -= (coef_2nd - coef_1st)
+            main[-1] += 2.0 * coef_2nd + (coef_2nd + coef_1st)
 
-            lower[-1] = -(coef_2nd - coef_1st)
-            main[-1] = 1.0 + 2.0 * coef_2nd + (coef_2nd + coef_1st)
+        # 2. Reaction Decay Contribution (Coupled)
+        # Add +0.5 * dt * K to the diagonal
+        # This makes the matrix implicit for the reaction term too.
+        if np.any(self.k != 0):
+            reaction_term = 0.5 * self.dt * self.k
+            main += reaction_term
 
-        # Convert to banded form for solve_banded with (1, 1)
+        # Format for solve_banded (3, N)
         ab = np.zeros((3, N))
         ab[0, 1:] = upper[:-1]
         ab[1, :] = main
         ab[2, :-1] = lower[1:]
         return ab
 
-    def _apply_explicit_operator(self, n, source=None):
+    def _apply_explicit_operator(self, n, extra_source=None):
         """
-        Apply the explicit part: (I + 0.5*dt*D*L) * n + 0.5*dt*S
-        where L is the radial Laplacian.
-
-        :param n: concentration array at current time
-        :param source: source term array (optional)
-        :return: right-hand side for the implicit solve
+        Apply (I + dt/2 * (D*Laplacian - K)) * n + dt * S
         """
         N = self.N
         dr = self.dr
@@ -179,56 +173,124 @@ class CrankNicolsonRadialSolver:
 
         rhs = np.copy(n)
 
-        # Center point (r=0)
-        rhs[0] = n[0] + 4.0 * alpha * (n[1] - n[0]) * self._inv_dr2
+        # 1. Diffusion Operator
+        # Center
+        rhs[0] += 4.0 * alpha * (n[1] - n[0]) * self._inv_dr2
 
-        # Interior points (vectorized if there are any)
+        # Interior
         if N > 2:
             ip = n[2:]
             i0 = n[1:-1]
             im = n[:-2]
 
-            coef_2nd = alpha * self._inv_dr2
-            coef_1st = alpha / (2.0 * dr * r[1:-1])
+            # Use precomputed coefficients
+            coef_2nd = self._coef_2nd_interior
+            coef_1st = self._coef_1st_interior
 
             lap = (ip - 2.0 * i0 + im) * coef_2nd
             lap += (ip - im) * coef_1st
-            rhs[1:-1] = i0 + lap
+            rhs[1:-1] += lap
 
-        # Outer boundary
+        # Outer
         if self.bc_outer == "neumann":
-            rhs[-1] = n[-1] + 2.0 * alpha * (n[-2] - n[-1]) * self._inv_dr2
+            rhs[-1] += 2.0 * alpha * (n[-2] - n[-1]) * self._inv_dr2
         elif self.bc_outer == "dirichlet":
             ri = r[-1]
             coef_2nd = alpha * self._inv_dr2
             coef_1st = alpha / (2.0 * dr * ri)
-            # Ghost point contribution
             n_ghost = 2.0 * self.dirichlet_value - n[-1]
             lap = (n_ghost - 2.0 * n[-1] + n[-2]) * coef_2nd
             lap += (n_ghost - n[-2]) * coef_1st
-            rhs[-1] = n[-1] + lap
+            rhs[-1] += lap
 
-        # Add source term if provided
-        if source is not None:
-            rhs += 0.5 * self.dt * source
+        # 2. Reaction Decay Contribution
+        # Subtract 0.5 * dt * K * n
+        if np.any(self.k != 0):
+            rhs -= 0.5 * self.dt * self.k * n
+
+        # 3. Source Terms (Base + Extra)
+        # Add full dt * S
+        if np.any(self.s != 0):
+            rhs += self.dt * self.s
+
+        if extra_source is not None:
+            rhs += self.dt * extra_source
 
         return rhs
 
-    def step(self, n, source=None):
+    def step(self, n, dt=None, source=None):
         """
-        Advance one time step using Crank-Nicolson scheme.
-
-        :param n: concentration array at current time
-        :param source: source term array (optional), evaluated at current time
-        :return: concentration array at next time step
+        Advance one time step.
+        :param n: Current concentration
+        :param dt: (Optional) New time step. If changed, matrix is rebuilt.
+        :param source: (Optional) Additional time-dependent source term.
         """
-        # Compute right-hand side
-        rhs = self._apply_explicit_operator(n, source)
+        # Handle adaptive time stepping efficiently
+        if dt is not None and dt != self.dt:
+            self.set_dt(dt)
 
-        # Solve linear system using banded solver; A is constant in time
+        # Compute Explicit Side (RHS)
+        rhs = self._apply_explicit_operator(n, extra_source=source)
+
+        # Solve Linear System (LHS)
         n_new = solve_banded((1, 1), self.ab, rhs)
 
         return n_new
+
+    def compute_residual(self, n):
+        """
+        Compute the residual R(n) = D*Laplacian(n) - K*n + S.
+        This represents ∂n/∂t at the current state.
+
+        :param n: Current concentration array
+        :return: Residual array (same shape as n)
+        """
+        N = self.N
+        dr = self.dr
+        r = self.r
+
+        # We need the spatial derivative operator (Laplacian) independent of dt.
+        # Laplacian = d2n/dr2 + (1/r)*dn/dr
+
+        # 1. Diffusion Term: D * Laplacian(n)
+        diff_term = np.zeros_like(n)
+        inv_dr2 = self._inv_dr2
+
+        # Interior points
+        if N > 2:
+            ip = n[2:]  # i+1
+            i0 = n[1:-1]  # i
+            im = n[:-2]  # i-1
+            r_int = r[1:-1]
+
+            # d2n/dr2
+            d2n = (ip - 2.0 * i0 + im) * inv_dr2
+            # (1/r) * dn/dr
+            dn_r = (ip - im) / (2.0 * dr * r_int)
+
+            diff_term[1:-1] = self.D * (d2n + dn_r)
+
+        # Boundary: r = 0 (Symmetry)
+        # Laplacian -> 4 * (n[1] - n[0]) / dr^2
+        diff_term[0] = self.D * 4.0 * (n[1] - n[0]) * inv_dr2
+
+        # Boundary: Outer (Neumann: dn/dr = 0 -> n_ghost = n_{N-2})
+        if self.bc_outer == "neumann":
+            # Laplacian -> 2 * (n[N-2] - n[N-1]) / dr^2
+            diff_term[-1] = self.D * 2.0 * (n[-2] - n[-1]) * inv_dr2
+        elif self.bc_outer == "dirichlet":
+            # (Logic for Dirichlet if needed...)
+            pass
+
+        # 2. Reaction Decay: -K * n
+        decay_term = -self.k * n if np.any(self.k != 0) else 0.0
+
+        # 3. Source: +S
+        source_term = self.s if np.any(self.s != 0) else 0.0
+
+        # Total Residual = ∂n/∂t
+        residual = diff_term + decay_term + source_term
+        return residual
 
     def solve(self, n0, t_final, source_func=None, store_every=1):
         """

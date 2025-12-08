@@ -1,11 +1,12 @@
 import sys
 import os
 from timeit import default_timer as dtm
+from backend.processclass import Experiment1D
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.processclass import Experiment1D
+
 import numpy as np
-import matplotlib.pyplot as plt
 
 
 print("Initializing precursor parameters...")
