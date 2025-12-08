@@ -503,4 +503,228 @@ def test_cartesian_radial_fd_equivalence(t_target):
     assert rel_linf_err < 0.1, f"L∞ error too large: {rel_linf_err:.2e}"
 
 
+# ========================================
+# 5) Crank-Nicolson solver tests
+# ========================================
+
+def test_radial_crank_nicolson_mass_conservation():
+    """
+    Test that the radial Crank-Nicolson solver conserves mass over time.
+    """
+    print("\nTesting radial Crank-Nicolson mass conservation.")
+    # Initial condition
+    n0 = analytic_gaussian_radial(r, t=0.0)
+    M0 = compute_mass(n0, r)
+
+    # Use larger time step (CN is unconditionally stable)
+    dt_cn = 1000 * dt  # 5x larger than explicit Euler
+    n_steps_cn = int(np.round(t3 / dt_cn))
+
+    # Initialize and run CN solver
+    solver = CrankNicolsonRadialSolver(r, D, dt_cn, bc_outer="neumann")
+
+    # Evolve to final time
+    n = n0.copy()
+    for i in range(n_steps_cn):
+        n = solver.step(n)
+
+    M_final = compute_mass(n, r)
+
+    # Mass should be conserved extremely well with CN
+    rel_err_initial = abs(M0 - M) / M
+    rel_err_final = abs(M_final - M) / M
+
+    print(f"\nCrank-Nicolson mass conservation:")
+    print(f"  Initial mass error: {rel_err_initial:.2e}")
+    print(f"  Final mass error: {rel_err_final:.2e}")
+    print(f"  Mass change: {(M_final - M0) / M0 * 100:.4f}%")
+
+    # CN should conserve mass better than explicit Euler
+    assert rel_err_initial < 5e-4
+    assert rel_err_final < 1e-2  # Should be much better than explicit
+
+
+@pytest.mark.parametrize("t_target", record_times)
+def test_radial_crank_nicolson_accuracy(t_target):
+    """
+    Test radial Crank-Nicolson solver accuracy against analytical solution.
+
+    CN is second-order accurate in time, so it should match the analytical
+    solution better than first-order explicit Euler, especially for larger
+    time steps.
+    """
+    print(f"\nTesting radial Crank-Nicolson profile at t={t_target} for accuracy against analytical solution.")
+    # Initial condition
+    n0 = analytic_gaussian_radial(r, t=0.0)
+
+    # Use larger time step to demonstrate CN stability and accuracy
+    dt_cn = 10 * dt
+
+    # Initialize solver
+    solver = CrankNicolsonRadialSolver(r, D, dt_cn, bc_outer="neumann")
+
+    # Solve using the solve method
+    times, solutions = solver.solve(n0, t_target, store_every=1)
+
+    # Get solution at target time (last stored solution)
+    n_num = solutions[-1, :]
+    n_ana = analytic_gaussian_radial(r, t_target)
+
+    # L2 error (area-weighted)
+    diff = n_num - n_ana
+    l2_num = np.sqrt(np.sum(2.0 * np.pi * r * diff**2) * dr)
+    l2_ref = np.sqrt(np.sum(2.0 * np.pi * r * n_ana**2) * dr)
+    rel_l2_err = l2_num / (l2_ref + 1e-15)
+
+    # L∞ error
+    linf_err = np.max(np.abs(diff))
+    linf_ref = np.max(np.abs(n_ana))
+    rel_linf_err = linf_err / (linf_ref + 1e-15)
+
+    print(f"\nCrank-Nicolson accuracy test at t={t_target}:")
+    print(f"  L2 relative error: {rel_l2_err:.2e}")
+    print(f"  L∞ relative error: {rel_linf_err:.2e}")
+    print(f"  dt_CN / dt_explicit = {dt_cn / dt:.1f}")
+
+    # CN should be accurate even with larger time steps
+    # These tolerances should be comparable or better than explicit Euler
+    assert rel_l2_err < 5e-2, f"L2 error too large: {rel_l2_err:.2e}"
+    assert rel_linf_err < 8e-2, f"L∞ error too large: {rel_linf_err:.2e}"
+
+
+@pytest.mark.parametrize("D", [1, 2, 5])
+def test_diffusion_coefficient_scan_radial_crank_nicholson(D):
+    """
+    Test radial Crank-Nicolson solver accuracy against analytical solution at D1, D2, D3.
+
+    CN is second-order accurate in time, so it should match the analytical
+    solution better than first-order explicit Euler, especially for larger
+    time steps.
+    """
+    t_0 = t0 / D
+    t_target = t3 / D
+    dt = 0.2 * dr ** 2 / D
+    n_steps = int(np.round((t3) / dt))
+    t_effective = n_steps * dt  # actual max time we reach (close to t3)
+    # Initial condition
+    n0 = analytic_gaussian_radial(r, t=0.0, D_loc=D, t0_loc=t_0)
+
+    # Use larger time step to demonstrate CN stability and accuracy
+    dt_cn = 25 * dt
+
+    # Initialize solver
+    solver = CrankNicolsonRadialSolver(r, D, dt_cn, bc_outer="neumann")
+
+    # Solve using the solve method
+    times, solutions = solver.solve(n0, t_target, store_every=1)
+
+    # Get solution at target time (last stored solution)
+    n_num = solutions[-1, :]
+    n_ana = analytic_gaussian_radial(r, t_target, D_loc=D, t0_loc=t_0)
+
+    # L2 error (area-weighted)
+    diff = n_num - n_ana
+    l2_num = np.sqrt(np.sum(2.0 * np.pi * r * diff**2) * dr)
+    l2_ref = np.sqrt(np.sum(2.0 * np.pi * r * n_ana**2) * dr)
+    rel_l2_err = l2_num / (l2_ref + 1e-15)
+
+    # L∞ error
+    linf_err = np.max(np.abs(diff))
+    linf_ref = np.max(np.abs(n_ana))
+    rel_linf_err = linf_err / (linf_ref + 1e-15)
+
+    print(f"\nCrank-Nicolson accuracy test at t={t_target} for D={D}")
+    print(f"  L2 relative error: {rel_l2_err:.2e}")
+    print(f"  L∞ relative error: {rel_linf_err:.2e}")
+    print(f"  n_ana[0]: {n_ana[0]:.4e}, n_num[0]: {n_num[0]:.4e}")
+    print(f"  n_ana[min]: {n_ana[np.argmin(n_ana)]:.4e}, n_num[min]: {n_num[np.argmin(n_num)]:.4e}")
+    print(f"  dt_CN / dt_explicit = {dt_cn / dt:.1f}")
+
+    # CN should be accurate even with larger time steps
+    # These tolerances should be comparable or better than explicit Euler
+    assert rel_l2_err < 5e-2, f"L2 error too large: {rel_l2_err:.2e}"
+    assert rel_linf_err < 8e-2, f"L∞ error too large: {rel_linf_err:.2e}"
+
+
+def test_crank_nicolson_variance_growth():
+    """
+    Test that CN solver correctly reproduces the variance growth <r^2>(t) = 4Dt.
+
+    This tests the overall diffusive behavior of the scheme.
+    """
+    print("\nTesting Crank-Nicolson variance growth.")
+    # Initial condition
+    n0 = analytic_gaussian_radial(r, t=0.0)
+
+    # Use moderately large time step
+    dt_cn = 25 * dt
+
+    solver = CrankNicolsonRadialSolver(r, D, dt_cn, bc_outer="neumann")
+
+    # Test at each record time
+    for t_target in record_times:
+        n_steps_to_target = int(np.round(t_target / dt_cn))
+
+        # Evolve
+        n = n0.copy()
+        for _ in range(n_steps_to_target):
+            n = solver.step(n)
+
+        r2_num = compute_r2_mean(n, r)
+        r2_ana = 4.0 * D * (t0 + t_target)
+
+        rel_err = abs(r2_num - r2_ana) / (r2_ana + 1e-15)
+
+        print(f"\nCN variance at t={t_target}: num={r2_num:.4f}, ana={r2_ana:.4f}, rel_err={rel_err:.2e}")
+
+        assert rel_err < 5e-2, f"Variance error too large at t={t_target}: {rel_err:.2e}"
+
+
+def test_crank_nicolson_vs_explicit_euler():
+    """
+    Compare Crank-Nicolson with explicit Euler at the same effective resolution.
+
+    CN should give comparable or better accuracy with larger time steps,
+    demonstrating its superior stability properties.
+    """
+    print("\nComparing Crank-Nicolson vs Explicit Euler accuracy.")
+    # Initial condition
+    n0 = analytic_gaussian_radial(r, t=0.0)
+    t_target = t3  # Test at intermediate time
+
+    # Explicit Euler (small time step)
+    n_euler, snapshots_euler, _ = evolve_diffusion(n0, r, dr, dt, n_steps, D)
+    n_euler_at_t2 = snapshots_euler[t_target]
+
+    # Crank-Nicolson (larger time step)
+    dt_cn = 25 * dt
+    n_steps_cn = int(np.round(t_target / dt_cn))
+
+    solver = CrankNicolsonRadialSolver(r, D, dt_cn, bc_outer="neumann")
+    n_cn = n0.copy()
+    for _ in range(n_steps_cn):
+        n_cn = solver.step(n_cn)
+
+    # Analytical solution
+    n_ana = analytic_gaussian_radial(r, t_target)
+
+    # Compare errors
+    def compute_rel_l2_error(n_num, n_ref):
+        diff = n_num - n_ref
+        l2_num = np.sqrt(np.sum(2.0 * np.pi * r * diff**2) * dr)
+        l2_ref = np.sqrt(np.sum(2.0 * np.pi * r * n_ref**2) * dr)
+        return l2_num / (l2_ref + 1e-15)
+
+    err_euler = compute_rel_l2_error(n_euler_at_t2, n_ana)
+    err_cn = compute_rel_l2_error(n_cn, n_ana)
+
+    print(f"\nExplicit Euler vs Crank-Nicolson comparison at t={t_target}:")
+    print(f"  Euler error (dt={dt:.2e}):  {err_euler:.2e}")
+    print(f"  CN error (dt={dt_cn:.2e}):     {err_cn:.2e}")
+    print(f"  CN uses {dt_cn/dt:.1f}x larger time step")
+
+    # CN should be at least as accurate as Euler despite larger time step
+    # This demonstrates the superior stability and accuracy of the implicit scheme
+    assert err_cn < 2 * err_euler, "CN should be competitive with Euler even at larger dt"
+
 
