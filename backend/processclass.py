@@ -12,7 +12,7 @@ from backend.pycl_test import cl_boilerplate, reaction_diffusion_jit
 from backend.dataclass import ContinuumModel
 from backend.analyse import get_peak, deposit_fwhm
 from backend.electron_flux import EFluxEstimator
-from backend.diffusion import laplace_1d, laplacian_radial_1d
+from backend.diffusion import laplace_1d, laplacian_radial_1d, CrankNicolsonRadialSolver
 
 
 class Experiment1D(ContinuumModel):
@@ -21,7 +21,7 @@ class Experiment1D(ContinuumModel):
     It allows calculation of a 2D precursor coverage and growth rate profiles based on the set conditions.
     """
 
-    def __init__(self, backend='cpu', coords='radial'):
+    def __init__(self, backend='cpu', coords='radial', num_scheme='fd'):
         super().__init__()
         self._r = None
         self.r = np.array([])
@@ -34,6 +34,7 @@ class Experiment1D(ContinuumModel):
         self._numexpr_name = 'r_e'
         self.coords = coords  # 'radial' or 'cartesian'
         self.equation = 'conventional'  # 'conventional' or 'dimensionless'
+        self.dt_cn = 1.0  # placeholder for CN time step
         self._tr = None
         n = 0.0
         n_D = 0.0
@@ -42,6 +43,12 @@ class Experiment1D(ContinuumModel):
                           sigma=self.sigma, D=self.D, dt=self.dt, step=self.step)
         ne.cache_expression("(s*F*(1-n/n0) - n/tau - sigma*f*n + n_D*D)*dt + n", self._numexpr_name,
                             local_dict=local_dict)
+
+        # Numerical scheme for diffusion operator:
+        # 'fd'  - explicit finite-difference Laplacian (legacy behaviour)
+        # 'cn'  - radial Crank-Nicolson solver engine (implicit)
+        self.num_scheme = num_scheme
+        self.solver = None  # will hold CN solver if used
 
     @property
     def _local_dict(self):
@@ -187,6 +194,22 @@ class Experiment1D(ContinuumModel):
                 loc = base_loc_dict.copy()
             loc = loc | dict(n=n, f=f, n_D=n_D)
             return loc
+
+        def reaction_step_exact(n, f, dt):
+            """Exact solution for linear reaction ODE"""
+            source = self.s * self.F
+            decay_rate = self.s * self.F / self.n0 + 1 / self.tau + self.sigma * f
+
+            # Exact solution: n(t) = n(0)*exp(-k*t) + S/k*(1 - exp(-k*t))
+            exp_term = np.exp(-decay_rate * dt)
+            n_new = n * exp_term + source / decay_rate * (1 - exp_term)
+
+            # Handle zero decay rate (avoid division by zero)
+            mask = decay_rate < 1e-15
+            n_new[mask] = n[mask] + source * dt  # Limit case
+
+            return n_new
+
         def solve_step(n, f, time_elapsed, dt=None):
             n_D = self.__diffusion(n)
             # Use the reduced dt value in the local dict for numexpr evaluation
@@ -195,13 +218,58 @@ class Experiment1D(ContinuumModel):
             if dt is not None:
                 time_elapsed += dt
             else:
-                time_elapsed += self.dt  # Increment time counter
+                time_elapsed += self.dt
             return time_elapsed
+
+        def solver_step_im(n, f, time_elapsed, dt=None):
+            """Solve one time step using Strang operator splitting.
+            Strang splitting:
+            1. Explicit reaction half-step (source + desorption)
+            2. Implicit diffusion full-step
+            3. Explicit reaction half-step
+            """
+            if dt is None:
+                dt = self.dt
+            # Step 1: Exact reaction half-step
+            n_half = reaction_step_exact(n, f, 0.5 * dt)
+
+            # Step 2: Implicit diffusion full-step using CN solver
+            # Use the solver directly for pure diffusion (no source)
+            n_star = self.solver.step(n_half, source=None)
+
+            # Step 3: Exact reaction half-step
+            n_new = reaction_step_exact(n_star, f, 0.5 * dt)
+
+            # Update time
+            time_elapsed += dt
+
+            # Write result back to n (in-place)
+            n[:] = n_new
+
+            return time_elapsed
+        # Choose solver function and time step based on numerical scheme
+        if self.num_scheme == 'cn':
+            r = self._r
+            D = self.D
+            # dt = min(self.dt_des, self.dt_diss) # Crank-Nicolson allows larger time steps
+            dt = self.dt_fd * 5
+            dt_min = self.dt_fd * 0.1
+            dt_max = self.dt * 100
+            dts = [dt]
+            self.dt_cn = dt
+            self.solver = CrankNicolsonRadialSolver(r=r, D=D, dt=dt, bc_outer="neumann")
+            solver_func = solver_step_im
+        else:
+            dt = self.dt
+            solver_func = solve_step
         base_local_dict = self._local_dict
-        dt = self.dt
-        n_iters = int(1e9)
+
+        n_iters = int(1e9)  # maximum allowed number of iterations per solution
         n = np.copy(n_init)
         n_check = np.copy(n_init)
+        n_half_2 = np.copy(n_init)
+        tol = init_tol
+        err_prev=tol
         base_step = 100
         skip_step = base_step * 5
         skip = skip_step  # next planned accuracy check iteration
@@ -239,21 +307,53 @@ class Experiment1D(ContinuumModel):
             step_iters[-1] = (skip - i) % iter_jump
             for step in step_iters:
                 for j in range(step):
-                    time_elapsed = solve_step(n, f, time_elapsed, dt)
+                    time_elapsed = solver_func(n, f, time_elapsed, dt)
                     if interval is not None and time_elapsed >= next_save_time:
                         n_all.append(np.copy(n))
                         timestamps.append(time_elapsed)
                         next_save_time += interval_s
                 if t:
                     t.update(step)
-                i = skip
-            n_check[...] = n
-            n_D = self.__diffusion(n)
-            ne.re_evaluate(self._numexpr_name, out=n, local_dict=local_dict(n, f, n_D))
-            if self._validation_check(n):
-                print(f'p_o: {self.p_o}, tau_r: {self.tau_r}')
-                raise ValueError('Solution unstable!')
-            norm = (np.linalg.norm(n[1:] - n_check[1:]) / np.linalg.norm(n[1:])) # checking change in solution vector
+
+            # Check convergence by comparing current state with saved state
+            i = skip
+
+            if self.num_scheme == 'cn':
+                # For CN, take one full step and two half-steps to estimate error
+                n_check[...] = n  # Save current state for next iteration
+                time_elapsed = solver_step_im(n, f, time_elapsed, dt/2)
+                time_elapsed = solver_step_im(n, f, time_elapsed, dt/2)
+                n_half_2[...] = n
+                n[...] = n_check  # Restore state
+                time_elapsed = solver_step_im(n, f, time_elapsed, dt)
+                # err = np.max(np.abs(n_half_2 - n))
+                err = np.linalg.norm(n_half_2[:] - n[:])/np.linalg.norm(n_half_2[:])  # relative norm
+                norm = np.linalg.norm(n[:] - n_check[:])/np.linalg.norm(n[:])  # relative norm
+                if verbose and i % (skip_step * 10) == 0:
+                    print(f"CN iter {i}: norm = {norm:.3e}, n_max = {n.max():.4f}, n_min = {n.min():.4f}")
+            else:
+                # For explicit FD, take one full step and two half-steps to estimate error
+                n_check[...] = n  # Save current state for next iteration
+                # Two half-steps
+                n_D = self.__diffusion(n)
+                loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D)
+                loc_dict['dt'] = dt / 2
+                ne.re_evaluate(self._numexpr_name, out=n, local_dict=loc_dict)
+                n_D = self.__diffusion(n)
+                loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D)
+                loc_dict['dt'] = dt / 2
+                ne.re_evaluate(self._numexpr_name, out=n, local_dict=loc_dict)
+                n_half_2[...] = n  # Save two half-step result
+                n[...] = n_check  # Restore state
+                # One full step
+                n_D = self.__diffusion(n)
+                loc_dict = base_local_dict | dict(n=n, f=f, n_D=n_D)
+                ne.re_evaluate(self._numexpr_name, out=n, local_dict=loc_dict)
+                norm = np.linalg.norm(n[:] - n_check[:])/np.linalg.norm(n[:])  # relative norm
+                if self._validation_check(n):
+                    print(f'p_o: {self.p_o}, tau_r: {self.tau_r}')
+                    raise ValueError('Solution unstable!')
+
             norm_array.append(norm)  # recording achieved accuracy for fitting
             iters.append(i)
             skip += skip_step
@@ -271,7 +371,6 @@ class Experiment1D(ContinuumModel):
                         fig, ax = _plot_solution_covergence(iters, norm_array, a, b, eps, fig, ax, dt=dt)
                 skip = int(
                     (np.log(eps) - a) / b) + skip_step * n_predictions  # making a prediction with overcompensation
-                if skip < 0:
                 if len(norm_array) > 4:
                     fit_offset += 1  # moving fitting window forward
                 if skip < 0 or skip > n_iters:
@@ -427,14 +526,35 @@ class Experiment1D(ContinuumModel):
     def _gpu_base_step(self):
         return 10 * int(np.log(self.D) * np.log(self.f0))
 
-    def __diffusion(self, n):
-        if self.coords == 'cartesian':
+    def __diffusion(self, n, coords=None, num_scheme=None):
+        """Compute diffusion term n_D.
+
+        For historical reasons this returned the spatial Laplacian times D
+        via an explicit finite-difference scheme. To support a more stable
+        implicit scheme, the behaviour is controlled by `self.num_scheme`:
+
+        - 'fd': explicit finite-difference Laplacian (original behaviour)
+        - 'cn': radial Crank-Nicolson solver used as diffusion engine
+        """
+        c = coords if coords is not None else self.coords
+        ns = num_scheme if num_scheme is not None else self.num_scheme
+
+        if c == 'cartesian':
             n_D = laplace_1d(n) / self._step ** 2
-        elif self.coords == 'radial':
-            n_D = laplacian_radial_1d(n, self._r, self._step)
+            return n_D
+        elif c == 'radial':
+            if ns == 'fd':
+                n_D = laplacian_radial_1d(n, self._r, self._step)
+                return n_D
+            elif ns == 'cn':
+                # Implicit Crank-Nicolson radial diffusion engine
+                # This returns the result after a full CN step (not just the Laplacian)
+                n_D = self.solver.step(n)
+                return n_D
+            else:
+                raise ValueError(f"Unknown numerical scheme '{ns}', expected 'fd' or 'cn'")
         else:
-            raise ValueError('Coordinates not recognized, use \'cartesian\' or \'radial\'')
-        return n_D
+            raise ValueError("Coordinates not recognized, use 'cartesian' or 'radial'")
 
     def analytic(self, r, f=None, out=None):
         """
@@ -491,6 +611,19 @@ class Experiment1D(ContinuumModel):
             r_diff = math.sqrt(self.tau_r * self.p_o)
         return max(r_lim, r_diff)
 
+    @property
+    def dt_fd(self):
+        """
+        Time step limit for explicit finite-difference scheme, s
+        """
+        return self._dt
+
+    # @property
+    # def dt_cn(self):
+    #     """
+    #     Time step limit for implicit Crank-Nicolson scheme, s
+    #     """
+    #     return min(self.dt_des, self.dt_diss)
 
     @property
     def tr(self, progress=False):
