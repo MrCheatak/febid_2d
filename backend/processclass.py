@@ -381,9 +381,19 @@ class Experiment1D(ContinuumModel):
                     raise ValueError('Instability in solution, solution convergence deviates from exponential behavior.')
                 prediction_step = skip  # next prediction will be after another norm is calculated
                 n_predictions += 1
-                if t:
-                    t.total = skip
-                    t.refresh()
+            if self.num_scheme == 'cn':
+                if err < tol:
+                    err_prev = err
+                    dt_new = dt * 0.9 * (tol / err) ** (1/3) * (tol / err_prev) ** 0.2  # adjust time step based on error
+                    dt = np.clip(dt_new, dt_min, dt_max)
+                    dts.append(dt)
+                else:  # Reject step
+                    dt = dt * 0.9 * (tol / err) ** (0.35)  # Reduce dt
+                    dt = max(dt, dt_min)
+                self.dt_cn = dt
+            if t:
+                t.total = skip
+                t.refresh()
 
         # Interpolate the exact time when accuracy reaches eps
         if len(norm_array) >= 2 and norm < eps:
