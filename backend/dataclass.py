@@ -23,6 +23,7 @@ class ContinuumModel(BeamSettings):
         self.D = 0.0  # nm^2/s
         self.V = 1.0  # nm^3
 
+        self._N = 100
         self._step = 1.0  # nm
 
         self._dt = 1.0
@@ -46,11 +47,24 @@ class ContinuumModel(BeamSettings):
         self._phi1 = np.nan
         self._phi2 = np.nan
 
+    @property
+    def N(self):
+        """
+        Reaction region discretization.
+        Calculated as FWHM_B/step.
+        :return:
+        """
+        return self._N
+
+    @N.setter
+    def N(self, val):
+        self._N = val
+        self._step = self.fwhm / self._N
 
     @property
     def step(self):
         """
-        Grid resolution, nm.
+        Grid step size, nm.
         :return:
         """
         return self._step
@@ -58,6 +72,7 @@ class ContinuumModel(BeamSettings):
     @step.setter
     def step(self, val):
         self._step = val
+        self._N = int(self.fwhm / self._step)
 
     @property
     def dt(self):
