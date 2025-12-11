@@ -83,6 +83,154 @@ class Experiment1D(ContinuumModel):
             self.r = np.arange(0, bonds, self.step)
         return self.r
 
+    def plot_relaxation_events(self, f=None, n_init=None, logx=True, logy=False, save_path=None, **kwargs):
+        """
+        Plots n[0] vs time and marks relaxation events (1tau, 3tau, 5tau).
+        Uses solve_to_depletion(temporal=True).
+        """
+        # 1. Define the deepest target (0.01 - 1%)
+        # We solve until this point to get the full trajectory
+        target_depletion = 0.001  # 1% of the way to steady state
+        if f is None:
+            f = self.get_beam()
+        if n_init is None:
+            n_init = np.full_like(self.r, self.nr)
+        print(f"Simulating trajectory to {target_depletion:.1%} depletion")
+
+        # 2. Run Solver
+        # Returns: n_final, t_final, n_ss, n_history, t_history
+        _, _, n_ss, n_all, t_all = self.solve_to_depletion(
+            f,
+            target_fraction=target_depletion,
+            n_init=n_init,
+            verbose=True,
+            temporal=True,
+            **kwargs,
+        )
+
+        # 3. Calculate Targets
+        n_start_center = n_all[0]
+        n_ss_center = n_ss[0]
+        total_drop = n_start_center - n_ss_center
+        ss_depletion = 1 - n_ss_center / n_start_center
+
+        rel_depl = [0.33, 0.5, 0.99, 0.999]
+        abs_depl = [1 - (n_ss_center + total_drop * (1 - x))/n_start_center for x in rel_depl]
+        # Define the specific events we want to mark
+        events = {
+            f'33% depletion ({abs_depl[0]:.2%} abs.)': 0.77,
+            f'50% depletion ({abs_depl[1]:.2%} abs.)': 0.5,
+            f'99% depletion ({abs_depl[2]:.2%} abs.)': 0.01,
+            f'99.9% depletion ({abs_depl[3]:.2%} abs.)': 0.001,
+        }
+
+        # 4. Find Intersections in the recorded data
+        results = {}
+
+        for label, fraction in events.items():
+            # The absolute concentration value we are looking for
+            target_val = n_ss_center + total_drop * fraction
+
+            # Find where the curve crosses this value
+            # n_all is decreasing. Find last index where n > target
+            # t_all corresponds to n_all
+
+            if np.any(n_all <= target_val):
+                idx = np.where(n_all > target_val)[0][-1]
+
+                # Interpolate between idx and idx+1
+                t1, t2 = t_all[idx], t_all[idx + 1]
+                val1, val2 = n_all[idx], n_all[idx + 1]
+
+                if abs(val1 - val2) > 1e-20:
+                    frac = (target_val - val1) / (val2 - val1)
+                    t_exact = t1 + frac * (t2 - t1)
+                else:
+                    t_exact = t1
+
+                results[label] = (t_exact, target_val)
+            else:
+                print(f"Warning: Did not reach {label} in simulation.")
+
+        # 5. Plotting
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=300)
+
+        # Main Curve
+        ax.plot(t_all, n_all, 'k-', lw=2, label='Center Concentration $n(0,t)$')
+
+        # Reference Lines
+        ax.axhline(n_start_center, color='gray', linestyle=':', alpha=0.5, label='Initial')
+        ax.axhline(n_ss_center, color='green', linestyle='--', label=f'Steady State, {ss_depletion:.2%} abs. depl.')
+
+        # Event Markers
+        colors = ['red', 'blue', 'purple', 'orange']
+        for (label, (t_ex, n_ex)), color in zip(results.items(), colors):
+            # Drop lines
+            ax.vlines(x=t_ex, ymin=n_ss_center, ymax=n_ex, colors=color, linestyles='--')
+            ax.hlines(y=n_ex, xmin=0, xmax=t_ex, colors=color, linestyles='--')
+
+            # Point
+            ax.plot(t_ex, n_ex, 'o', color=color, markersize=6)
+
+            # Label
+            if color == 'purple':
+                xytext = (-10, 30)
+            else:
+                xytext = (50, 50)
+            ax.annotate(f"{label}\n{t_ex:.2e}s",
+                        xy=(t_ex, n_ex),
+                        xytext=xytext, textcoords='offset points',
+                        color=color, fontsize=9, fontweight='bold',
+                        arrowprops=dict(arrowstyle='->', color=color),
+                        )
+
+        # Axes Settings
+        x_label = "Time (s)"
+        y_label = "Concentration n(0)"
+        if logy:
+            ax.set_yscale('log')
+            y_label += " (log scale)"
+        if logx:
+            ax.set_xscale('log')
+            x_label += " (log scale)"
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+        ax.set_title("Relaxation Events")
+        ax.grid(True, which='both', alpha=0.3)
+        ax.legend()
+
+        # --- 4. ADD PARAMETERS BOX ---
+
+        # Adjust bottom margin to make space for text
+        plt.subplots_adjust(bottom=0.25)
+
+        # Handle f if it's an array (take max) or scalar
+        f_val = np.max(f)
+
+        # Construct the parameter string
+        # Using LaTeX formatting for math symbols
+        param_text = (
+            f"$\mathbf{{Simulation\ Parameters:}}$\n"
+            f"E-flux ($f_{{max}}$): {f_val:.2e} | $FWHM_{{B}}$: {self.fwhm:.1f} | $\sigma$: {self.sigma:.4f}\n"
+            f"Diffusion ($D$): {self.D:.2e} | $tau$: {self.tau:.2e} s | Gas supply ($sF$): {self.s*self.F:.1f}"
+        )
+
+        # Place text in figure coordinates (0,0 is bottom-left, 1,1 is top-right)
+        fig.text(
+            0.5, 0.05,  # x, y positions
+            param_text,
+            ha='center',  # Horizontal alignment
+            va='bottom',  # Vertical alignment
+            fontsize=10,
+            bbox=dict(boxstyle='round,pad=0.5', facecolor='#f0f0f0', edgecolor='gray', alpha=1.0)
+        )
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Plot saved to {save_path}")
+
+        plt.show()
+
     def solve_steady_state(self, r=None, f=None, eps=1e-4, n_init=None, **kwargs):
         """
         Derive a steady state precursor coverage.
