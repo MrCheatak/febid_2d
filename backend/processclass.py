@@ -4,9 +4,11 @@ import numexpr_mod as ne
 import pyopencl as cl
 from tqdm import tqdm
 import matplotlib
-matplotlib.use('TkAgg')
+# matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from scipy.interpolate import CubicSpline, PchipInterpolator, Akima1DInterpolator, make_interp_spline
+from scipy.sparse import diags
+from scipy.sparse.linalg import spsolve
 
 from backend.pycl_test import cl_boilerplate, reaction_diffusion_jit
 from backend.dataclass import ContinuumModel
@@ -260,15 +262,7 @@ class Experiment1D(ContinuumModel):
             dt_max = self.dt * self.cn_dt_max_factor
             dts = []
             self.dt_cn = dt
-            # Initialize solver with reaction terms
-            self.solver = CrankNicolsonRadialSolver(
-                r=r,
-                D=D,
-                dt=dt,
-                reaction_k=reaction_k,
-                reaction_s=reaction_s,
-                bc_outer="neumann"
-            )
+            solver = self.construct_cn_solver(f, dt)
             solver_func = solver_step_im
             eps_pre1 = eps * 5
             eps_pre2 = eps * 1.5
@@ -480,6 +474,35 @@ class Experiment1D(ContinuumModel):
         timestamps.append(time_elapsed_corrected)
         return n_all, timestamps
 
+    def construct_cn_solver(self, f, dt):
+        if self._r is None:
+            self.get_grid()
+        r = self._r
+        D = self.D
+        # Pre-calculate Linear Reaction Terms
+        # Decay rate K(r) = s*F/n0 + 1/tau + sigma*f
+        # Source term S(r) = s*F
+        # Note: We assume 'f' is constant for this solve run.
+        reaction_k = self.s * self.F / self.n0 + 1 / self.tau + self.sigma * f
+        reaction_s = self.s * self.F
+        # dt = min(self.dt_des, self.dt_diss) # Crank-Nicolson allows larger time steps
+        theta = 0.5  # Crank-Nicolson weighting
+        stability_criterion = self.system_stiffness * self.dt_fd * 100
+        if stability_criterion >= 2:
+            # Stiff proble
+            theta = 1.0  # Backward Euler
+        # Initialize solver with reaction terms
+        self.solver = CrankNicolsonRadialSolver(
+            r=r,
+            D=D,
+            dt=dt,
+            reaction_k=reaction_k,
+            reaction_s=reaction_s,
+            bc_outer="neumann",
+            theta=theta
+        )
+        return self.solver
+
     def _numeric_gpu(self, f_init, eps=1e-8, n_init=None, progress=False, ctx=None, queue=None):
         # Padding array to fit a group size
         N = n_init.shape[0]
@@ -600,6 +623,73 @@ class Experiment1D(ContinuumModel):
     def _gpu_base_step(self):
         return 10 * int(np.log(self.D) * np.log(self.f0))
 
+    def get_steady_state(self, solver=None):
+        """
+        Calculate steady state solution by solving the BVP:
+        L*n = -S, where L = D*(d2/dr2 + 1/r d/dr) - K
+        1. Build Tridiagonal Matrix for L
+        2. Solve L*n = -S
+        3. Return n_steady_bvp
+        :param solver: CrankNicolsonRadialSolver instance (optional)
+        :return: steady state precursor coverage profile
+        """
+        if solver is None:
+            solver = self.construct_cn_solver(self.f, self.dt)
+        # Build Tridiagonal Matrix for L = D*(d2/dr2 + 1/r d/dr) - K
+        D = self.D
+        N = solver.N
+        r = solver.r
+        dr = solver.dr
+        K = solver.k if isinstance(solver.k, np.ndarray) else np.full(N, solver.k)
+        S = solver.s if isinstance(solver.s, np.ndarray) else np.full(N, solver.s)
+        diagonals = [np.zeros(N), np.zeros(N), np.zeros(N)]  # Lower, Main, Upper
+
+        inv_dr2 = 1.0 / (dr ** 2)
+
+        # Interior Points
+        for i in range(1, N - 1):
+            # Coeffs for: D * (n[i+1] - 2n[i] + n[i-1])/dr^2
+            c2 = D * inv_dr2
+            # Coeffs for: D * (1/r) * (n[i+1] - n[i-1])/(2dr)
+            c1 = D / (2 * r[i] * dr)
+
+            diagonals[0][i - 1] = c2 - c1  # Lower (coefficient of i-1)
+            diagonals[1][i] = -2 * c2 - K[i]  # Main  (coefficient of i)
+            diagonals[2][i + 1] = c2 + c1  # Upper (coefficient of i+1)
+
+        # BC: r=0 (Symmetry) -> 4 * D * (n[1]-n[0])/dr^2 - K[0]*n[0]
+        diagonals[1][0] = -4 * D * inv_dr2 - K[0]
+        diagonals[2][1] = 4 * D * inv_dr2
+
+        # BC: Outer (Neumann) -> 2 * D * (n[N-2]-n[N-1])/dr^2 - K[-1]*n[-1]
+        diagonals[0][N - 2] = 2 * D * inv_dr2
+        diagonals[1][N - 1] = -2 * D * inv_dr2 - K[-1]
+
+        # Construct exact arrays for diags
+        # Lower diagonal (offset -1): Entry k corresponds to A[k+1, k]
+        # We stored A[i, i-1] at index i-1.
+        # Letting k = i-1, we need index k. So we take the sequence from 0.
+        lower_data = diagonals[0][:-1]  # Cut off the last unused element
+
+        # Main diagonal (offset 0)
+        main_data = diagonals[1]
+
+        # Upper diagonal (offset +1): Entry k corresponds to A[k, k+1]
+        # We stored A[i, i+1] at index i+1.
+        # Letting k = i, we need index k+1. So we shift left by 1.
+        upper_data = diagonals[2][1:]  # Cut off the first unused element
+
+        # Construct sparse matrix
+        matrix = diags(
+            [lower_data, main_data, upper_data],
+            [-1, 0, 1], shape=(N, N), format='csc'
+        )
+
+        # Solve L*n = -S
+        rhs = -S
+        n_steady_bvp = spsolve(matrix, rhs)
+        return n_steady_bvp
+
     def __diffusion(self, n, coords=None, num_scheme=None):
         """Compute diffusion term n_D.
 
@@ -686,11 +776,28 @@ class Experiment1D(ContinuumModel):
         return max(r_lim, r_diff)
 
     @property
+    def decay_rate(self):
+        """
+        System mathematical decay rate, 1/s
+        """
+        k = self.s * self.F / self.n0 + 1 / self.tau + self.sigma * self.f.max()
+        return k
+
+    @property
+    def system_stiffness(self):
+        """
+        System stiffness ratio
+        """
+        k = self.decay_rate
+        stiffness = k + 4 * self.D / self.step ** 2
+        return stiffness
+
+    @property
     def dt_fd(self):
         """
         Time step limit for explicit finite-difference scheme, s
         """
-        return self._dt
+        return self.dt
 
     # @property
     # def dt_cn(self):
