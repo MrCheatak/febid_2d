@@ -179,7 +179,177 @@ class Experiment1D(ContinuumModel):
         self._interp = None
         return n
 
-    def _numeric(self, f, eps=1e-4, n_init=None, interval=None, init_tol=1e-5, progress=False, verbose=False, plot_fit=False):
+    def solve_to_depletion(self, f, target_fraction=0.01, n_init=None, tol=1e-4, verbose=True, temporal=False, progress=False):
+        """
+        Solves time evolution until a specific depletion depth is reached.
+        Supports temporal recording for visualization.
+        """
+        # 1. Setup Initial State
+        if n_init is None:
+            n = np.copy(n_init)  # FIX: self.n_init, not n_init
+        else:
+            n = np.copy(n_init)
+
+        # 2. Configure Solver
+        # Start with a safe, small dt to catch the "Cliff"
+        dt = self.dt_fd
+        solver = self.construct_cn_solver(f, dt)
+
+        # 3. LOOK AHEAD: Calculate Exact Steady State
+        if verbose: print("Pre-calculating steady state target...")
+        n_ss = self.get_steady_state(solver)
+
+        # 4. Calculate Distance
+        def get_distance(n_current, n_target):
+            return np.linalg.norm(n_current - n_target)
+
+        dist_total = get_distance(n, n_ss)
+        target_value = (n_init[0] - n_ss[0]) * target_fraction + n_ss[0]
+        initial_value = n[0]
+
+        # Handle edge case
+        if dist_total < 1e-15:
+            if verbose: print("System is already at steady state.")
+            # Handle return signature consistency
+            if temporal:
+                return n, 0.0, n_ss, [n[0]], [0.0]
+            else:
+                return n, 0.0, n_ss
+
+        # 5. Time Stepping Setup
+        time_elapsed = 0.0
+
+        # History for interpolation logic (Fraction vs Time)
+        history_time = [0.0]
+        history_fraction = [1.0]
+        history_n_center = [n[0]]
+
+        # Temporal recording (Center concentration vs Time)
+        if temporal:
+            n_all = [n[0]]
+            time_all = [0.0]
+
+        # Adaptive parameters
+        n_iters = int(1e9)
+        dt_min = self.dt_fd * 0.001
+        dt_max = self.dt * self.cn_dt_max_factor
+
+        if verbose:
+            print(f"Total distance to cover: {dist_total:.4e}")
+            print(f"Target fraction: {target_fraction:.4%}")
+
+        # 6. Progress Bar Setup
+        if progress:
+            pbar = tqdm(total=target_value)
+        else:
+            pbar = None
+
+        # 6. The Loop
+        i = 0
+        while i < n_iters:
+            # Save state before attempting step (crucial for re-stepping)
+            n_prev_step = np.copy(n)
+
+            # --- Standard Adaptive Step ---
+            n_full = solver.step(n, dt=dt)
+            n_half = solver.step(n, dt=dt / 2)
+            n_half_2 = solver.step(n_half, dt=dt / 2)
+
+            # Error Estimate
+            scale = np.maximum(np.abs(n_full), np.abs(n_half_2)) + 1e-20
+            err = np.linalg.norm((n_full - n_half_2) / scale)
+
+            if err < tol:
+                # --- STEP CANDIDATE ACCEPTED ---
+
+                # Check target using the CANDIDATE (n_half_2)
+                # We have NOT updated 'n' or 'time_elapsed' yet
+                dist_current = get_distance(n_half_2, n_ss)
+                fraction_remaining = dist_current / dist_total
+                current_value = n_half_2[0]
+
+                if current_value <= target_value:
+                    # --- TARGET REACHED ---
+
+                    # 1. Interpolate Exact Time
+                    # Previous point (valid history)
+                    t_prev_log = history_time[-1]
+                    frac_prev_log = history_fraction[-1]
+                    n_c_prev = history_n_center[-1]
+
+                    # Candidate point
+                    t_curr_log = time_elapsed + dt
+                    n_c = current_value
+
+                    # Log-Linear Interpolation
+                    y1, y2 = np.log(max(n_c_prev, 1e-20)), np.log(max(n_c, 1e-20))
+                    target_log = np.log(target_value)
+
+                    slope = (y2 - y1) / (t_curr_log - t_prev_log)
+
+                    if abs(slope) > 1e-15:
+                        time_exact = t_prev_log + (target_log - y1) / slope
+                    else:
+                        time_exact = t_curr_log
+
+                    # 2. Re-step to Exact Time
+                    # We use n_prev_step (state at time_elapsed)
+                    dt_final = time_exact - time_elapsed
+
+                    if dt_final > 1e-15:
+                        if verbose: print(f"Performing final partial step: dt = {dt_final:.3e}s")
+                        n_exact = solver.step(n_prev_step, dt=dt_final)
+                    else:
+                        n_exact = n_prev_step
+
+                    if verbose:
+                        print(f"Target reached.")
+                        print(f"Time Exact ({target_fraction * 100:.1f}%): {time_exact:.4e} s")
+
+                    # Update temporal lists one last time
+                    if temporal:
+                        n_all.append(n_exact[0])
+                        time_all.append(time_exact)
+                        return n_exact, time_exact, n_ss, np.array(n_all), np.array(time_all)
+                    else:
+                        return n_exact, time_exact, n_ss
+
+                # --- CONTINUE SIMULATION ---
+                # Update State
+                n[:] = n_half_2
+                time_elapsed += dt
+                i += 1
+
+                history_time.append(time_elapsed)
+                history_fraction.append(fraction_remaining)
+                history_n_center.append(n[0])
+
+                if temporal:
+                    n_all.append(n[0])
+                    time_all.append(time_elapsed)
+
+                if verbose and i % 500 == 0:
+                    print(f"Time: {time_elapsed:.2e}s | Remaining: {fraction_remaining:.2%}")
+
+                # Increase dt
+                dt = min(dt * 1.5, dt_max)
+                solver.set_dt(dt)
+
+                if progress:
+                    pbar.n = current_value
+                    pbar.refresh()
+            else:
+                # Reject Step
+                dt = max(dt * 0.5, dt_min)
+                solver.set_dt(dt)
+
+        # Fallback if max iters reached
+        if temporal:
+            return n, time_elapsed, n_ss, np.array(n_all), np.array(time_all)
+        else:
+            return n, time_elapsed, n_ss
+
+    def _numeric(self, f, eps=1e-4, n_init=None, interval=None, init_tol=1e-5, depletion=0.01, progress=False, verbose=False, plot_fit=False):
         """
         Solve the reaction-diffusion equation numerically.
 
@@ -807,20 +977,17 @@ class Experiment1D(ContinuumModel):
     #     return min(self.dt_des, self.dt_diss)
 
     @property
-    def tr(self, progress=False):
+    def tr(self):
         """
         System relaxation time from a fully replenished state, s
         """
         r = self.get_grid()
         f = self.get_beam(r)
         n_init = np.full_like(r, self.nr)
-        if self.__backend == 'cpu':
-            func = self._numeric
-        elif self.__backend == 'gpu':
-            func = self._numeric_gpu
         # Solve with interval-based sampling
-        n_solutions, timestamps = func(f=f, n_init=n_init, progress=progress)
-        return timestamps[-1]
+        n_99, depletion_time, nss = self.solve_to_depletion(f, target_fraction=0.01, n_init=n_init, verbose=False)
+        self.n = n_99
+        return depletion_time
 
     @property
     def r(self):
@@ -1068,7 +1235,7 @@ class Experiment1D(ContinuumModel):
 
         # Create interpolation function using cubic spline
         from scipy.interpolate import CubicSpline
-        interp_func = CubicSpline(timestamps, n_center)
+        interp_func = CubicSpline(timestamps[:-1], n_center[:-1])
 
         # Interpolate to dense grid
         n_all = np.zeros_like(times_dense)
