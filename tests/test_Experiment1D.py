@@ -45,6 +45,7 @@ def test_cases_cn_vs_fd():
 
     print(f"\nRunning CN scheme...")
     pr.num_scheme = 'cn'
+    pr.cn_dt_max_factor = 2000
     start_time = dtm()
     n_cn = pr.solve_steady_state(n_init=n_init, progress=True, plot_fit=True, init_tol=1e-5)
     end_time = dtm()

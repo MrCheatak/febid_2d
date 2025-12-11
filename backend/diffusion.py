@@ -70,13 +70,14 @@ class CrankNicolsonRadialSolver:
     Solves: ∂n/∂t = D * (∂²n/∂r² + (1/r)∂n/∂r) - K(r)*n + S(r)
     """
 
-    def __init__(self, r, D, dt, reaction_k=0.0, reaction_s=0.0, bc_outer="neumann", dirichlet_value=0):
+    def __init__(self, r, D, dt, reaction_k=0.0, reaction_s=0.0, bc_outer="neumann", dirichlet_value=0, theta=0.5):
         """
         :param r: Radial grid
         :param D: Diffusion coefficient
         :param dt: Initial time step
         :param reaction_k: Linear decay rate (scalar or array matching r). Corresponds to (s*F/n0 + 1/tau + sigma*f)
         :param reaction_s: Constant source term (scalar or array). Corresponds to (s*F)
+        :param theta: Implicitness parameter (0.5 = Crank-Nicolson, 1.0 = Implicit Euler)
         """
         self.r = r
         self.N = len(r)
@@ -88,6 +89,7 @@ class CrankNicolsonRadialSolver:
         # Store reaction terms
         self.k = reaction_k
         self.s = reaction_s
+        self.theta = theta  # Store theta (0.5 or 1.0)
 
         self._inv_dr2 = 1.0 / (self.dr * self.dr)
 
@@ -97,26 +99,29 @@ class CrankNicolsonRadialSolver:
     def set_dt(self, dt):
         """Update time step and rebuild matrix if dt changes."""
         self.dt = dt
-        self._alpha = 0.5 * self.dt * self.D
+        # Alpha depends on theta now
+        # alpha_imp is for the LHS matrix (Implicit)
+        self._alpha_imp = self.theta * self.dt * self.D
 
-        # Precompute diffusion coefficients based on new alpha
+        # alpha_exp is for the RHS vector (Explicit)
+        self._alpha_exp = (1.0 - self.theta) * self.dt * self.D
+
         if self.N > 2:
             interior_r = self.r[1:-1]
-            self._coef_2nd_interior = self._alpha * self._inv_dr2
-            self._coef_1st_interior = self._alpha / (2.0 * self.dr * interior_r)
+            # Implicit coefficients
+            self._coef_2nd_imp = self._alpha_imp * self._inv_dr2
+            self._coef_1st_imp = self._alpha_imp / (2.0 * self.dr * interior_r)
+            # Explicit coefficients
+            self._coef_2nd_exp = self._alpha_exp * self._inv_dr2
+            self._coef_1st_exp = self._alpha_exp / (2.0 * self.dr * interior_r)
 
         # Rebuild the matrix with new dt
         self.ab = self._build_implicit_banded_matrix()
 
     def _build_implicit_banded_matrix(self):
-        """
-        Build (I - dt/2 * (D*Laplacian - K)).
-        Result is banded matrix for (I - 0.5*dt*D*L + 0.5*dt*K) * n^{k+1}
-        """
+        """Build (I - theta * dt * (D*Laplacian - K))."""
         N = self.N
-        dr = self.dr
-        r = self.r
-        alpha = self._alpha
+        alpha = self._alpha_imp  # Use Implicit Alpha
 
         lower = np.zeros(N)
         main = np.ones(N)
@@ -130,9 +135,8 @@ class CrankNicolsonRadialSolver:
 
         # Interior points
         if N > 2:
-            coef_2nd = self._coef_2nd_interior
-            coef_1st = self._coef_1st_interior
-
+            coef_2nd = self._coef_2nd_imp
+            coef_1st = self._coef_1st_imp
             lower[1:-1] -= (coef_2nd - coef_1st)
             main[1:-1] += 2.0 * coef_2nd
             upper[1:-1] -= (coef_2nd + coef_1st)
@@ -142,20 +146,16 @@ class CrankNicolsonRadialSolver:
             lower[-1] -= 2.0 * alpha * self._inv_dr2
             main[-1] += 2.0 * alpha * self._inv_dr2
         elif self.bc_outer == "dirichlet":
-            ri = r[-1]
+            ri = self.r[-1]
             coef_2nd = alpha * self._inv_dr2
-            coef_1st = alpha / (2.0 * dr * ri)
+            coef_1st = alpha / (2.0 * self.dr * ri)
             lower[-1] -= (coef_2nd - coef_1st)
             main[-1] += 2.0 * coef_2nd + (coef_2nd + coef_1st)
 
-        # 2. Reaction Decay Contribution (Coupled)
-        # Add +0.5 * dt * K to the diagonal
-        # This makes the matrix implicit for the reaction term too.
+        # Reaction Decay (Implicit Part): + theta * dt * K
         if np.any(self.k != 0):
-            reaction_term = 0.5 * self.dt * self.k
-            main += reaction_term
+            main += self.theta * self.dt * self.k
 
-        # Format for solve_banded (3, N)
         ab = np.zeros((3, N))
         ab[0, 1:] = upper[:-1]
         ab[1, :] = main
@@ -163,56 +163,45 @@ class CrankNicolsonRadialSolver:
         return ab
 
     def _apply_explicit_operator(self, n, extra_source=None):
-        """
-        Apply (I + dt/2 * (D*Laplacian - K)) * n + dt * S
-        """
+        """Apply (I + (1-theta) * dt * (D*Laplacian - K)) * n + dt * S"""
         N = self.N
-        dr = self.dr
-        r = self.r
-        alpha = self._alpha
+        alpha = self._alpha_exp  # Use Explicit Alpha
 
         rhs = np.copy(n)
 
+        # If theta=1.0, alpha_exp is 0, so diffusion part is skipped (Pure Implicit)
         # 1. Diffusion Operator
-        # Center
-        rhs[0] += 4.0 * alpha * (n[1] - n[0]) * self._inv_dr2
 
-        # Interior
-        if N > 2:
-            ip = n[2:]
-            i0 = n[1:-1]
-            im = n[:-2]
+        if self.theta < 1.0:
+            # Center
+            rhs[0] += 4.0 * alpha * (n[1] - n[0]) * self._inv_dr2
+            if N > 2:
+                ip, i0, im = n[2:], n[1:-1], n[:-2]
+                # Use precomputed coefficients
+                coef_2nd = self._coef_2nd_exp
+                coef_1st = self._coef_1st_exp
+                rhs[1:-1] += (ip - 2.0 * i0 + im) * coef_2nd + (ip - im) * coef_1st
+            # Outer
+            if self.bc_outer == "neumann":
+                rhs[-1] += 2.0 * alpha * (n[-2] - n[-1]) * self._inv_dr2
+            if self.bc_outer == "dirichlet":
+                ri = self.r[-1]
+                coef_2nd = alpha * self._inv_dr2
+                coef_1st = alpha / (2.0 * self.dr * ri)
+                n_ghost = 2.0 * self.dirichlet_value - n[-1]
+                lap = (n_ghost - 2.0 * n[-1] + n[-2]) * coef_2nd
+                lap += (n_ghost - n[-2]) * coef_1st
+                rhs[-1] += lap
 
-            # Use precomputed coefficients
-            coef_2nd = self._coef_2nd_interior
-            coef_1st = self._coef_1st_interior
-
-            lap = (ip - 2.0 * i0 + im) * coef_2nd
-            lap += (ip - im) * coef_1st
-            rhs[1:-1] += lap
-
-        # Outer
-        if self.bc_outer == "neumann":
-            rhs[-1] += 2.0 * alpha * (n[-2] - n[-1]) * self._inv_dr2
-        elif self.bc_outer == "dirichlet":
-            ri = r[-1]
-            coef_2nd = alpha * self._inv_dr2
-            coef_1st = alpha / (2.0 * dr * ri)
-            n_ghost = 2.0 * self.dirichlet_value - n[-1]
-            lap = (n_ghost - 2.0 * n[-1] + n[-2]) * coef_2nd
-            lap += (n_ghost - n[-2]) * coef_1st
-            rhs[-1] += lap
-
-        # 2. Reaction Decay Contribution
-        # Subtract 0.5 * dt * K * n
-        if np.any(self.k != 0):
-            rhs -= 0.5 * self.dt * self.k * n
+            # 2. Reaction Decay Contribution
+            # Reaction Decay (Explicit Part): - (1-theta) * dt * K
+            if np.any(self.k != 0):
+                rhs -= (1.0 - self.theta) * self.dt * self.k * n
 
         # 3. Source Terms (Base + Extra)
-        # Add full dt * S
+        # Source term is usually fully integrated over dt
         if np.any(self.s != 0):
             rhs += self.dt * self.s
-
         if extra_source is not None:
             rhs += self.dt * extra_source
 

@@ -35,6 +35,7 @@ class Experiment1D(ContinuumModel):
         self.coords = coords  # 'radial' or 'cartesian'
         self.equation = 'conventional'  # 'conventional' or 'dimensionless'
         self.dt_cn = 1.0  # placeholder for CN time step
+        self.cn_dt_max_factor = 1000.0  # maximum factor to increase dt in CN scheme
         self._tr = None
         n = 0.0
         n_D = 0.0
@@ -256,8 +257,8 @@ class Experiment1D(ContinuumModel):
             # dt = min(self.dt_des, self.dt_diss) # Crank-Nicolson allows larger time steps
             dt = self.dt_fd * 5
             dt_min = self.dt_fd * 0.1
-            dt_max = self.dt * 1000
-            dts = [dt]
+            dt_max = self.dt * self.cn_dt_max_factor
+            dts = []
             self.dt_cn = dt
             # Initialize solver with reaction terms
             self.solver = CrankNicolsonRadialSolver(
