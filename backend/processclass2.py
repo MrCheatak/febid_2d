@@ -154,7 +154,7 @@ if __name__ == '__main__':
     pr_d.order = 2
     pr_d.fwhm = 500
     pr_d.step = pr_d.fwhm / 200
-    pr_d.backend = 'gpu'
+    pr_d.backend = 'cpu'
     pr_d.solve_steady_state(progress=True)
     # print(pr_d.r_max_n)
     pr_d.plot('R')

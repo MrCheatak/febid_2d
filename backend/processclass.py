@@ -90,7 +90,7 @@ class Experiment1D(ContinuumModel):
         """
         # 1. Define the deepest target (0.01 - 1%)
         # We solve until this point to get the full trajectory
-        target_depletion = 0.001  # 1% of the way to steady state
+        target_depletion = 0.0001  # 1% of the way to steady state
         if f is None:
             f = self.get_beam()
         if n_init is None:
@@ -505,32 +505,13 @@ class Experiment1D(ContinuumModel):
         :param eps: solution accuracy
         :param n_init: initial precursor coverage
         :param interval: time interval between saved solutions in microseconds (if None, solve to steady state)
-        :param progress: show progress bar
+        :param init_tol: initial tolerance for adaptive time stepping (Crank-Nicolson only)
+        :param depletion: if not None, stop when precursor at r=0 reaches this fraction of initial value
+        :param progress: show progress bar in terminal
+        :param verbose: print detailed solver information
+        :param plot_fit: plot the exponential fit of the solution convergence
         :return: if interval is None: solution array; else: (solutions_list, timestamps_list)
         """
-        def local_dict(n, f, n_D, base_loc_dict=None):
-            if base_loc_dict is None:
-                loc = self._local_dict
-            else:
-                loc = base_loc_dict.copy()
-            loc = loc | dict(n=n, f=f, n_D=n_D)
-            return loc
-
-        def reaction_step_exact(n, f, dt):
-            """Exact solution for linear reaction ODE"""
-            source = self.s * self.F
-            decay_rate = self.s * self.F / self.n0 + 1 / self.tau + self.sigma * f
-
-            # Exact solution: n(t) = n(0)*exp(-k*t) + S/k*(1 - exp(-k*t))
-            exp_term = np.exp(-decay_rate * dt)
-            n_new = n * exp_term + source / decay_rate * (1 - exp_term)
-
-            # Handle zero decay rate (avoid division by zero)
-            mask = decay_rate < 1e-15
-            n_new[mask] = n[mask] + source * dt  # Limit case
-
-            return n_new
-
         def solve_step(n, f, time_elapsed, dt=None):
             n_D = self.__diffusion(n)
             # Use the reduced dt value in the local dict for numexpr evaluation
@@ -568,13 +549,6 @@ class Experiment1D(ContinuumModel):
         if self.num_scheme == 'cn':
             r = self._r
             D = self.D
-            # Pre-calculate Linear Reaction Terms
-            # Decay rate K(r) = s*F/n0 + 1/tau + sigma*f
-            # Source term S(r) = s*F
-            # Note: We assume 'f' is constant for this solve run.
-            reaction_k = self.s * self.F / self.n0 + 1 / self.tau + self.sigma * f
-            reaction_s = self.s * self.F
-            # dt = min(self.dt_des, self.dt_diss) # Crank-Nicolson allows larger time steps
             dt = self.dt_fd * 5
             dt_min = self.dt_fd * 0.1
             dt_max = self.dt * self.cn_dt_max_factor
@@ -582,16 +556,32 @@ class Experiment1D(ContinuumModel):
             self.dt_cn = dt
             solver = self.construct_cn_solver(f, dt)
             solver_func = solver_step_im
+            # Build Tridiagonal Matrix for L = D*(d2/dr2 + 1/r d/dr) - K
             eps_pre1 = eps * 5
             eps_pre2 = eps * 1.5
             eps_final = eps
             eps_list = [eps_pre1, eps_pre2, eps_final]
+
         else:
             dt = self.dt
             solver_func = solve_step
             eps_list = [eps]
         base_local_dict = self._local_dict
-
+        if depletion:
+            if n_init[0] == 0:
+                raise ValueError('Not allowed to solve against depletion with n[...]=0 initial conditions. Depletion criterion specified but initial precursor at r=0 is zero.')
+            n_ss = self.get_steady_state(solver=solver)  # Precompute steady state for CN solver
+            # Aiming for 99% depletion
+            # δ(t) = |n(t)[0] - n_ss[0]| / |n(0)[0] - n_ss[0]| = 0.01
+            n_t = depletion * np.abs(n_init[0] - n_ss[0]) + n_ss[0]
+            total_distance = np.abs(n_init[0] - n_ss[0])
+            eps = depletion
+            eps_pre1 = eps * 1.2
+            eps_pre2 = eps * 1.05
+            eps_final = eps
+            eps_list = [eps_pre1, eps_pre2, eps_final]
+            self.cn_dt_max_factor = 1.0  # limit time step increase for depletion runs
+            dt_max = self.dt * self.cn_dt_max_factor
         n_iters = int(1e9)  # maximum allowed number of iterations per solution
         n = np.copy(n_init)
         n_check = np.copy(n_init)
@@ -607,6 +597,7 @@ class Experiment1D(ContinuumModel):
         norm_array = []
         iters = []
         time_array = []
+        dts = []
         time_elapsed = 0  # Initialize time counter
         fit_offset = 0
         # Storage for temporal solutions
@@ -634,6 +625,7 @@ class Experiment1D(ContinuumModel):
 
                 step_iters = np.full((skip - i) // iter_jump + 1, iter_jump)
                 step_iters[-1] = (skip - i) % iter_jump
+                step_counter = 0
                 for step in step_iters:
                     for j in range(step):
                         time_elapsed = solver_func(n, f, time_elapsed, dt)
@@ -641,6 +633,7 @@ class Experiment1D(ContinuumModel):
                             n_all.append(np.copy(n))
                             timestamps.append(time_elapsed)
                             next_save_time += interval_s
+                    step_counter += step
                     if t:
                         t.update(step)
                 i = skip
@@ -684,23 +677,28 @@ class Experiment1D(ContinuumModel):
                     if self._validation_check(n):
                         print(f'p_o: {self.p_o}, tau_r: {self.tau_r}')
                         raise ValueError('Solution unstable!')
-
                 norm_array.append(norm)  # recording achieved accuracy for fitting
                 iters.append(i)
                 time_array.append(time_elapsed)
+                dts.append(dt)
                 skip += skip_step
+                if depletion:
+                    current_distance = abs(n[0] - n_ss[0])
+                    remaining_fraction = current_distance / total_distance
+                    if remaining_fraction < ep:
+
+                        if verbose:
+                            print(f'Reached depletion level at iteration {i}, n[0]={n[0]:.4f}')
+                        break
                 if ep > norm:
                     # print(f'Reached solution with an error of {norm:.3e}')
-                    fit_offset += 2
-                    if k+1 == len(eps_list) - 1:  # final eps reached
+                    if len(norm_array) > 4:
+                        fit_offset += 2
+                    if k + 1 == len(eps_list) - 1:  # final eps reached
                         final_eps = True
-                        dt = self.dt_fd
-                        dts.append(dt)
-                        iters.append(i)
-                        norm_array.append(norm)
-                        time_array.append(time_elapsed)
+                        dt = self.dt_fd * 10
                     if plot_fit:
-                        a, b = self.__fit_exponential(iters[fit_offset:], norm_array[fit_offset:])
+                        a, b = self.__fit_exponential(iters[-4:], norm_array[-4:])
                         if len(norm_array) < 4:
                             fig, ax = _plot_solution_covergence(iters, norm_array, a, b, ep, dt=dt, times=time_array)
                         else:
@@ -709,7 +707,7 @@ class Experiment1D(ContinuumModel):
                 if i % prediction_step == 0 or i > prediction_step:
                     if len(norm_array) < 3:
                         continue
-                    a, b = self.__fit_exponential(iters[fit_offset:], norm_array[fit_offset:])
+                    a, b = self.__fit_exponential(iters[-4:], norm_array[-4:])
                     if plot_fit:
                         if len(norm_array) < 4:
                             fig, ax = _plot_solution_covergence(iters, norm_array, a, b, ep, dt=dt, times=time_array)
@@ -733,19 +731,18 @@ class Experiment1D(ContinuumModel):
                             err_prev = err
                             dt_new = dt * 0.9 * (tol / err) ** (1/3) * (tol / err_prev) ** 0.2  # adjust time step based on error
                             dt = np.clip(dt_new, dt_min, dt_max)
-                            dts.append(dt)
                         else:  # Reject step
                             dt = dt * 0.9 * (tol / err) ** (0.35)  # Reduce dt
                             dt = max(dt, dt_min)
                     else:
-                        dt = self.dt_fd
-                        dts.append(dt)
+                        dt = self.dt_fd * 10
                     self.dt_cn = dt
 
                     if t:
                         t.total = skip
                         t.refresh()
-
+        if plot_fit:
+            fig, ax = _plot_solution_covergence(iters, norm_array, a, b, ep, fig, ax, dt=dt, times=time_array)
         # Interpolate the exact time when accuracy reaches eps
         if len(norm_array) >= 2 and norm < eps:
             if self.num_scheme == 'cn':
